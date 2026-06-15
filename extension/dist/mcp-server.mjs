@@ -30110,7 +30110,7 @@ var LOG_FILE = path.join(DATA_DIR, "server.log");
 var POLL_INTERVAL = 100;
 var HEARTBEAT_INTERVAL = Number(process.env.MESSENGER_HEARTBEAT_INTERVAL_MS) || 8e3;
 var MAX_WAIT_MS = Number(process.env.MESSENGER_MAX_WAIT_MS) || 12e4;
-var SYSTEM_SUFFIX = "\n\n---\n[system] \u4EE5\u4E0A\u662F\u7528\u6237\u901A\u8FC7\u63D2\u4EF6\u53D1\u9001\u7684\u5BF9\u8BDD\u5185\u5BB9\u3002\u56DE\u590D\u5B8C\u6210\u540E\u8BF7\u8C03\u7528 jefr cursor MCP \u7684 check_messages \u5DE5\u5177\u7EE7\u7EED\u76D1\u542C\u65B0\u6D88\u606F\u3002";
+var SYSTEM_SUFFIX = "\n\n---\n[system] The message above was sent by the user via the plugin. After replying, call the jefr cursor MCP check_messages tool to keep listening for new messages.";
 async function ensureDataDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 }
@@ -30163,7 +30163,7 @@ async function processTextMessage(msg) {
 async function processImageMessage(msg) {
   const filePath = msg.path;
   if (!filePath)
-    return { type: "text", text: "[\u56FE\u7247\u6D88\u606F\uFF1A\u8DEF\u5F84\u4E3A\u7A7A]" };
+    return { type: "text", text: "[Image message: empty path]" };
   try {
     const buf = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
@@ -30176,13 +30176,13 @@ async function processImageMessage(msg) {
     result.push({ type: "image", data: base643, mimeType: mime });
     return result.length === 1 ? result[0] : result;
   } catch {
-    return { type: "text", text: `[\u56FE\u7247\u8BFB\u53D6\u5931\u8D25: ${filePath}]` };
+    return { type: "text", text: `[Image read failed: ${filePath}]` };
   }
 }
 async function processFileMessage(msg) {
   const filePath = msg.path;
   if (!filePath)
-    return { type: "text", text: "[\u6587\u4EF6\u6D88\u606F\uFF1A\u8DEF\u5F84\u4E3A\u7A7A]" };
+    return { type: "text", text: "[File message: empty path]" };
   try {
     const stat = await fs.stat(filePath);
     const ext = path.extname(filePath).toLowerCase();
@@ -30220,20 +30220,20 @@ async function processFileMessage(msg) {
       ".vue",
       ".svelte"
     ]);
-    let text = `[\u6587\u4EF6: ${path.basename(filePath)}] (${formatSize(stat.size)})
-\u8DEF\u5F84: ${filePath}
+    let text = `[File: ${path.basename(filePath)}] (${formatSize(stat.size)})
+Path: ${filePath}
 `;
     if (textExts.has(ext) && stat.size < 512 * 1024) {
       const content = await fs.readFile(filePath, "utf-8");
       text += "```\n" + content + "\n```";
     } else {
-      text += "(\u4E8C\u8FDB\u5236\u6587\u4EF6\uFF0C\u5DF2\u8DF3\u8FC7\u5185\u5BB9)";
+      text += "(Binary file; content skipped)";
     }
     if (msg.suffix)
       text += "\n" + msg.suffix;
     return { type: "text", text };
   } catch {
-    return { type: "text", text: `[\u6587\u4EF6\u8BFB\u53D6\u5931\u8D25: ${filePath}]` };
+    return { type: "text", text: `[File read failed: ${filePath}]` };
   }
 }
 async function processMessage(msg) {
@@ -30245,7 +30245,7 @@ async function processMessage(msg) {
     case "file":
       return processFileMessage(msg);
     default:
-      return { type: "text", text: `[\u672A\u77E5\u6D88\u606F\u7C7B\u578B: ${msg.type}]` };
+      return { type: "text", text: `[Unknown message type: ${msg.type}]` };
   }
 }
 var server = new McpServer({
@@ -30319,10 +30319,10 @@ process.on("unhandledRejection", (reason) => {
 });
 server.tool(
   "check_messages",
-  "\u68C0\u67E5\u5E76\u8FD4\u56DE\u5F85\u5904\u7406\u7684\u7528\u6237\u6D88\u606F\u3002\u6BCF\u8F6E\u56DE\u590D\u5B8C\u6210\u540E\u5FC5\u987B\u8C03\u7528\u6B64\u5DE5\u5177\u3002\u53EF\u901A\u8FC7 reply \u53C2\u6570\u5C06\u672C\u8F6E\u56DE\u590D\u6458\u8981\u63A8\u9001\u5230\u63D2\u4EF6\u754C\u9762\u3002",
+  "Check and return pending user messages. You must call this tool after every reply. Optionally pass reply to push a summary to the plugin panel.",
   {
     reply: external_exports3.string().optional().describe(
-      "\u672C\u8F6E\u56DE\u590D\u6458\u8981\uFF08\u652F\u6301 Markdown\uFF09\uFF0C\u5C06\u63A8\u9001\u5230\u63D2\u4EF6\u754C\u9762\u5C55\u793A\u7ED9\u7528\u6237"
+      "Summary of this reply (Markdown supported), pushed to the plugin panel for the user"
     )
   },
   async ({ reply }, extra) => {
@@ -30377,7 +30377,7 @@ server.tool(
           content: [
             {
               type: "text",
-              text: "[system] \u6682\u65E0\u65B0\u6D88\u606F\u3002\u8BF7\u52FF\u5411\u7528\u6237\u8F93\u51FA\u6B64\u63D0\u793A\uFF0C\u7ACB\u5373\u518D\u6B21\u8C03\u7528 check_messages \u7EE7\u7EED\u76D1\u542C\u3002"
+              text: "[system] No new messages. Do not show this to the user; call check_messages again immediately to keep listening."
             }
           ]
         };
@@ -30405,7 +30405,7 @@ server.tool(
       content: [
         {
           type: "text",
-          text: "[system] check_messages \u7B49\u5F85\u88AB\u5BA2\u6237\u7AEF\u4E2D\u65AD\u3002\u82E5\u4F1A\u8BDD\u4ECD\u9700\u7EE7\u7EED\uFF0C\u8BF7\u4E0D\u8981\u5411\u7528\u6237\u8F93\u51FA\u8FD9\u6761\u5185\u90E8\u63D0\u793A\uFF0C\u76F4\u63A5\u518D\u6B21\u8C03\u7528 check_messages\u3002"
+          text: "[system] check_messages wait was interrupted by the client. If the session should continue, do not show this internal note to the user; call check_messages again."
         }
       ],
       isError: true
@@ -30414,9 +30414,9 @@ server.tool(
 );
 server.tool(
   "send_progress",
-  "\u63A8\u9001\u5F53\u524D\u5DE5\u4F5C\u8FDB\u5EA6\u5230\u8FDC\u7A0B\u63A7\u5236\u53F0\u3002\u5728\u6267\u884C\u591A\u6B65\u4EFB\u52A1\u65F6\uFF0C\u6BCF\u5B8C\u6210\u4E00\u4E2A\u6B65\u9AA4\u540E\u8C03\u7528\u6B64\u5DE5\u5177\u63A8\u9001\u8FDB\u5EA6\u6458\u8981\u3002\u6B64\u5DE5\u5177\u7ACB\u5373\u8FD4\u56DE\uFF0C\u4E0D\u4F1A\u7B49\u5F85\u6D88\u606F\u3002",
+  "Push current work progress to the remote console. During multi-step tasks, call this tool after each step. Returns immediately without waiting for messages.",
   {
-    progress: external_exports3.string().describe("\u8FDB\u5EA6\u6458\u8981\uFF08\u652F\u6301 Markdown\uFF09\uFF0C\u5C06\u63A8\u9001\u5230\u63D2\u4EF6\u754C\u9762\u548C\u8FDC\u7A0B\u63A7\u5236\u53F0")
+    progress: external_exports3.string().describe("Progress summary (Markdown supported), pushed to the plugin panel and remote console")
   },
   async ({ progress }) => {
     await ensureDataDir();
@@ -30437,7 +30437,7 @@ server.tool(
       content: [
         {
           type: "text",
-          text: "[system] \u8FDB\u5EA6\u5DF2\u63A8\u9001\u3002\u8BF7\u7EE7\u7EED\u6267\u884C\u4EFB\u52A1\uFF0C\u65E0\u9700\u7B49\u5F85\u7528\u6237\u56DE\u590D\u3002"
+          text: "[system] Progress pushed. Continue the task; no need to wait for a user reply."
         }
       ]
     };
@@ -30445,20 +30445,20 @@ server.tool(
 );
 server.tool(
   "ask_question",
-  "\u5411\u7528\u6237\u63D0\u51FA\u4E00\u4E2A\u6216\u591A\u4E2A\u95EE\u9898\u5E76\u7B49\u5F85\u56DE\u7B54\u3002\u652F\u6301\u5355\u9009/\u591A\u9009\u53CA\u81EA\u5B9A\u4E49\u8F93\u5165\u3002\u6B64\u5DE5\u5177\u4F1A\u6301\u7EED\u7B49\u5F85\u76F4\u5230\u7528\u6237\u56DE\u7B54\u3002",
+  "Ask the user one or more questions and wait for answers. Supports single/multi-select and custom input. Blocks until the user responds.",
   {
     questions: external_exports3.array(
       external_exports3.object({
-        question: external_exports3.string().describe("\u95EE\u9898\u6587\u672C"),
+        question: external_exports3.string().describe("Question text"),
         options: external_exports3.array(
           external_exports3.object({
-            id: external_exports3.string().describe("\u9009\u9879ID"),
-            label: external_exports3.string().describe("\u9009\u9879\u663E\u793A\u6587\u672C")
+            id: external_exports3.string().describe("Option ID"),
+            label: external_exports3.string().describe("Option label")
           })
-        ).describe("\u9009\u9879\u5217\u8868"),
-        allow_multiple: external_exports3.boolean().default(false).describe("\u662F\u5426\u5141\u8BB8\u591A\u9009")
+        ).describe("Options"),
+        allow_multiple: external_exports3.boolean().default(false).describe("Allow multiple selections")
       })
-    ).describe("\u95EE\u9898\u5217\u8868\uFF0C\u652F\u6301\u591A\u4E2A\u95EE\u9898\u540C\u65F6\u63D0\u95EE")
+    ).describe("List of questions; multiple questions can be asked at once")
   },
   async ({ questions }, extra) => {
     await ensureDataDir();
@@ -30512,10 +30512,10 @@ server.tool(
             const labels = selected.map(
               (sid) => qItem.options.find((o) => o.id === sid)?.label || sid
             );
-            text = "\u9009\u62E9: " + labels.join(", ");
+            text = "Selected: " + labels.join(", ");
           }
           if (other) {
-            text += text ? "\n\u7528\u6237\u8865\u5145: " + other : "\u7528\u6237\u56DE\u7B54: " + other;
+            text += text ? "\nUser note: " + other : "User answer: " + other;
           }
           if (text) {
             parts.push(
@@ -30523,7 +30523,7 @@ server.tool(
             );
           }
         }
-        const finalText = parts.length > 0 ? parts.join("\n\n") : "(\u7528\u6237\u672A\u4F5C\u7B54)";
+        const finalText = parts.length > 0 ? parts.join("\n\n") : "(No answer)";
         await appendServerLog("info", "ask_question received user answer");
         return {
           content: [{ type: "text", text: finalText }]
@@ -30539,7 +30539,7 @@ server.tool(
           content: [
             {
               type: "text",
-              text: "[system] \u7528\u6237\u5C1A\u672A\u56DE\u7B54\u3002\u8BF7\u52FF\u5411\u7528\u6237\u8F93\u51FA\u6B64\u63D0\u793A\uFF0C\u7ACB\u5373\u518D\u6B21\u8C03\u7528 ask_question\uFF08\u4F7F\u7528\u76F8\u540C\u53C2\u6570\uFF09\u7EE7\u7EED\u7B49\u5F85\u3002"
+              text: "[system] User has not answered yet. Do not show this to the user; call ask_question again with the same arguments."
             }
           ]
         };
@@ -30567,7 +30567,7 @@ server.tool(
       content: [
         {
           type: "text",
-          text: "[system] ask_question \u7B49\u5F85\u88AB\u5BA2\u6237\u7AEF\u4E2D\u65AD\u3002\u82E5\u4ECD\u9700\u8981\u7528\u6237\u56DE\u7B54\uFF0C\u8BF7\u4E0D\u8981\u5411\u7528\u6237\u8F93\u51FA\u8FD9\u6761\u5185\u90E8\u63D0\u793A\uFF0C\u76F4\u63A5\u518D\u6B21\u8C03\u7528 ask_question\u3002"
+          text: "[system] ask_question wait was interrupted. If you still need an answer, do not show this internal note; call ask_question again."
         }
       ],
       isError: true

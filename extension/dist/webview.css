@@ -39,7 +39,7 @@ body {
 	overflow: hidden;
 }
 
-/* ========== 主容器 - 使用 flex 纵向布局 ========== */
+/* ========== Main container - flex column layout ========== */
 .app {
 	display: flex;
 	flex-direction: column;
@@ -50,7 +50,7 @@ body {
 	overflow: hidden;
 }
 
-/* ========== 顶部头栏 ========== */
+/* ========== Top header ========== */
 .header {
 	display: flex;
 	align-items: center;
@@ -84,7 +84,7 @@ body {
 	letter-spacing: 0.3px;
 }
 
-/* ========== 卡密激活区 ========== */
+/* ========== License key activation ========== */
 .card-panel {
 	background: linear-gradient(135deg, rgba(124,107,245,0.06), rgba(80,160,255,0.04));
 	border: 1px solid rgba(124,107,245,0.2);
@@ -208,7 +208,7 @@ body {
 	font-weight: 600;
 }
 
-/* ========== 问题面板（AI 提问） ========== */
+/* ========== Question panel (AI question) ========== */
 .question-panel {
 	background: linear-gradient(135deg, rgba(96,165,250,0.06), rgba(124,107,245,0.04));
 	border: 1px solid rgba(96,165,250,0.25);
@@ -304,12 +304,12 @@ body {
 	margin-top: 10px;
 }
 
-/* ========== MCP 规则折叠区 - 完全隐藏 ========== */
+/* ========== MCP rules fold area - hidden ========== */
 .collapsible-section {
 	display: none !important;
 }
 
-/* ========== 输入栏内的 MCP 复制按钮 ========== */
+/* ========== MCP copy button in input bar ========== */
 .mcp-copy-inline {
 	background: transparent !important;
 	color: rgba(204,204,204,0.5) !important;
@@ -336,7 +336,7 @@ body {
 	color: var(--success) !important;
 }
 
-/* ========== 版本号 ========== */
+/* ========== Version ========== */
 .version-tag {
 	font-size: 10px;
 	color: rgba(204,204,204,0.3);
@@ -347,7 +347,7 @@ body {
 	letter-spacing: 0.3px;
 }
 
-/* ========== 对话历史 - 放在输入框上方 ========== */
+/* ========== Chat history - above input ========== */
 .history {
 	flex: 1;
 	min-height: 0;
@@ -392,7 +392,7 @@ body {
 	color: rgba(204,204,204,0.8);
 }
 
-/* ========== 图片粘贴预览（在一体化输入框内） ========== */
+/* ========== Image paste preview (inside unified input) ========== */
 .pasted-images {
 	display: flex;
 	gap: 8px;
@@ -450,7 +450,7 @@ body {
 	border-top-right-radius: 0;
 }
 
-/* ========== 输入区域 - 一体化聊天框 ========== */
+/* ========== Input area - unified chat box ========== */
 .input-area {
 	display: flex;
 	flex-direction: column;
@@ -544,7 +544,7 @@ input:focus-visible {
 	margin-left: auto;
 }
 
-/* ========== 按钮 ========== */
+/* ========== Buttons ========== */
 .btn {
 	padding: 7px 16px;
 	border: none;
@@ -602,7 +602,7 @@ input:focus-visible {
 	box-shadow: none !important;
 }
 
-/* ========== 拖拽状态 ========== */
+/* ========== Drag state ========== */
 .input-area.drag-over {
 	border-color: var(--accent) !important;
 	background: rgba(124,107,245,0.08) !important;
@@ -610,7 +610,7 @@ input:focus-visible {
 }
 
 .input-area.drag-over::after {
-	content: "松手即可发送文件";
+	content: "Release to send file";
 	position: absolute;
 	inset: 0;
 	display: flex;
@@ -626,7 +626,7 @@ input:focus-visible {
 	backdrop-filter: blur(2px);
 }
 
-/* ========== 禁用态 ========== */
+/* ========== Disabled state ========== */
 .input-area.disabled {
 	position: relative;
 	opacity: 0.4;
@@ -649,7 +649,7 @@ input:focus-visible {
 	border-radius: var(--radius);
 }
 
-/* ========== 弹窗 ========== */
+/* ========== Modal ========== */
 .modal-overlay {
 	position: fixed;
 	inset: 0;
@@ -732,7 +732,7 @@ input:focus-visible {
 	margin-bottom: 6px;
 }
 
-/* ========== Tab 栏 ========== */
+/* ========== Tab bar ========== */
 .tab-bar {
 	display: flex;
 	gap: 2px;
@@ -786,7 +786,7 @@ input:focus-visible {
 	line-height: 1.4;
 }
 
-/* ========== 任务队列 Tab 内容 ========== */
+/* ========== Task queue tab content ========== */
 .queue-tab {
 	flex: 1;
 	display: flex;
@@ -953,7 +953,7 @@ input:focus-visible {
 	justify-content: flex-end;
 }
 
-/* ========== 发送记录行样式 ========== */
+/* ========== Send history row styles ========== */
 .history-item-v2 {
 	display: flex;
 	align-items: center;
@@ -1029,7 +1029,7 @@ input:focus-visible {
 	cursor: not-allowed;
 }
 
-/* ========== 使用教程 ========== */
+/* ========== Tutorial ========== */
 .tutorial-section {
 	order: 4;
 	flex-shrink: 0;
@@ -1117,7 +1117,7 @@ input:focus-visible {
 	line-height: 1.5;
 }
 
-/* ========== 额度统计 Tab ========== */
+/* ========== Usage stats Tab ========== */
 .usage-tab {
 	flex: 1;
 	display: flex;
@@ -1214,7 +1214,7 @@ input:focus-visible {
 	word-break: break-all;
 }
 
-/* ── 注入状态 ── */
+/* ── Injection status ── */
 .inject-status {
 	display: flex;
 	align-items: center;
@@ -1390,7 +1390,7 @@ input:focus-visible {
 	font-weight: 400;
 }
 
-/* ========== 模型使用统计 ========== */
+/* ========== Model usage stats ========== */
 .usage-models-section {
 	background: rgba(255,255,255,0.03);
 	border: 1px solid rgba(255,255,255,0.06);
@@ -1486,7 +1486,7 @@ input:focus-visible {
 	flex-shrink: 0;
 }
 
-/* ── Token 注入卡片 ── */
+/* ── Token injection card ── */
 .token-inject-card {
 	background: rgba(255,255,255,0.03);
 	border: 1px solid rgba(255,255,255,0.06);
@@ -1549,7 +1549,7 @@ input:focus-visible {
 	font-family: inherit;
 }
 
-/* ========== 滚动条全局 ========== */
+/* ========== Global scrollbar ========== */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }

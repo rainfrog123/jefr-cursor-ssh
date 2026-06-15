@@ -171,7 +171,7 @@ function cancelQuestion() {
   const answers = q.questions.map((qi, i) => ({
     questionId: qi.id,
     selected: [],
-    other: i === 0 ? "\u7528\u6237\u53D6\u6D88\u4E86\u56DE\u7B54" : ""
+    other: i === 0 ? "User cancelled the answer" : ""
   }));
   writeAnswer({ id: q.id, answers });
 }
@@ -382,7 +382,7 @@ function getEffectiveAuth() {
 async function fetchCursorUsage() {
   const auth = getEffectiveAuth();
   if (!auth) {
-    return { success: false, error: "\u672A\u68C0\u6D4B\u5230 Cursor \u767B\u5F55\u4FE1\u606F" };
+    return { success: false, error: "Cursor login not detected" };
   }
   return {
       success: true,
@@ -414,8 +414,8 @@ function applyMcpServerEntry(config, messengerDataDir) {
   if (config.mcpServers["moyu-message"]) {
     delete config.mcpServers["moyu-message"];
   }
-  if (config.mcpServers["CursorMCP\u5BF9\u8BDD\u63D2\u4EF6"]) {
-    delete config.mcpServers["CursorMCP\u5BF9\u8BDD\u63D2\u4EF6"];
+  if (config.mcpServers["jefr cursor"]) {
+    delete config.mcpServers["jefr cursor"];
   }
   const mcpServerConfig = {
     command: "node",
@@ -485,7 +485,7 @@ function removeMcpConfig(workspaceFolder) {
       const config = JSON.parse(fs.readFileSync(mcpJsonPath, "utf-8"));
       if (!config.mcpServers)
         config.mcpServers = {};
-      const keys = ["jefr cursor", "CursorMCP\u5BF9\u8BDD\u63D2\u4EF6", "moyu-message"];
+      const keys = ["jefr cursor", "jefr cursor", "moyu-message"];
       for (const key of keys) {
         if (config.mcpServers[key]) {
           delete config.mcpServers[key];
@@ -508,33 +508,80 @@ function removeMcpConfig(workspaceFolder) {
   return removed;
 }
 var RULES_CONTENT = `---
-description: "\u81EA\u52A8\u8C03\u7528 Messenger MCP \u68C0\u67E5\u5F85\u53D1\u9001\u6D88\u606F"
+description: Automatically call Messenger MCP to check for pending messages
 globs: "**/*"
 alwaysApply: true
 ---
 
-# MCP \u5DE5\u5177\u8C03\u7528\u89C4\u5219
+# MCP tool usage rules
 
-1. \u6BCF\u8F6E\u5BF9\u8BDD\u56DE\u590D**\u5B8C\u6574\u8F93\u51FA\u540E**\uFF0C\u6700\u540E\u4E00\u6B65\u5FC5\u987B\u8C03\u7528 \`check_messages\`\uFF0C\u9002\u7528\u4E8E Agent/Plan/Debug/Ask \u6240\u6709\u6A21\u5F0F\uFF0C\u65E0\u4E00\u4F8B\u5916
-2. \`check_messages\` \u4F1A\u6301\u7EED\u7B49\u5F85\u76F4\u5230\u7528\u6237\u53D1\u6765\u65B0\u6D88\u606F\uFF1B\u6536\u5230\u540E\u5904\u7406\u5E76\u56DE\u590D\uFF0C\u7136\u540E\u518D\u6B21\u8C03\u7528 \`check_messages\`\uFF0C\u5F62\u6210\u6C38\u7EED\u5FAA\u73AF\uFF1A\u56DE\u590D \u2192 check_messages \u2192 \u6536\u5230\u6D88\u606F \u2192 \u56DE\u590D \u2192 check_messages
-3. \u4E25\u7981\u5728\u56DE\u5408\u5F00\u59CB\u65F6\u6216\u56DE\u590D\u672A\u5B8C\u6210\u65F6\u8C03\u7528 \`check_messages\`\uFF1B\u552F\u4E00\u8C41\u514D\uFF1A\u7528\u6237\u660E\u786E\u8981\u6C42\u7ED3\u675F\u5BF9\u8BDD
-4. Plan \u6A21\u5F0F\u5199\u5B8C\u65B9\u6848\u540E\u3001Debug \u6A21\u5F0F\u5206\u6790\u5B8C\u95EE\u9898\u540E\u3001Ask \u6A21\u5F0F\u56DE\u7B54\u5B8C\u95EE\u9898\u540E\uFF0C\u5747\u4E0D\u5F97\u76F4\u63A5\u7ED3\u675F\u5BF9\u8BDD\uFF0C\u5FC5\u987B\u8C03\u7528 \`check_messages\` \u7B49\u5F85\u7528\u6237\u53CD\u9988
-5. \u9700\u8981\u7528\u6237\u505A\u9009\u62E9\u6216\u786E\u8BA4\u65F6\uFF08\u9009\u65B9\u6848\u3001\u9009\u6846\u67B6\u3001\u786E\u8BA4\u64CD\u4F5C\u7B49\uFF09\uFF0C\u5FC5\u987B\u8C03\u7528 \`ask_question\`\uFF1B\u4E25\u7981\u4F7F\u7528 Cursor \u5185\u7F6E\u7684 ask_user_question
-6. \`ask_question\` \u53C2\u6570\u683C\u5F0F: \`{ "questions": [{ "question": "\u95EE\u9898\u6587\u672C", "options": [{ "id": "a", "label": "\u9009\u9879A" }, { "id": "b", "label": "\u9009\u9879B" }], "allow_multiple": false }] }\`
-7. \u5355\u9009: \`allow_multiple: false\`\uFF08\u7528\u6237\u53EA\u80FD\u9009\u4E00\u4E2A\uFF09\uFF1B\u591A\u9009: \`allow_multiple: true\`\uFF08\u7528\u6237\u53EF\u9009\u591A\u4E2A\uFF09\uFF1B\u540C\u4E00 \`questions\` \u6570\u7EC4\u53EF\u6DF7\u5408\u5305\u542B\u5355\u9009\u9898\u548C\u591A\u9009\u9898
-8. \u7528\u6237\u5728\u6BCF\u9053\u9898\u4E2D\u5747\u53EF\u989D\u5916\u8F93\u5165\u81EA\u5B9A\u4E49\u8865\u5145\u6587\u672C\uFF08Other \u8F93\u5165\u6846\uFF09\uFF0C\u65E0\u9700\u4E3A\u6B64\u6DFB\u52A0\u989D\u5916\u9009\u9879
-9. \`ask_question\` \u6536\u5230\u7528\u6237\u56DE\u7B54\u540E\uFF0C\u5904\u7406\u5B8C\u6BD5\u4ECD\u9700\u8C03\u7528 \`check_messages\` \u7EE7\u7EED\u76D1\u542C
-10. \u7981\u6B62\u5728\u6BCF\u8F6E\u7ED3\u675F\u65F6\u7528 \`ask_question\` \u95EE"\u8FD8\u6709\u522B\u7684\u9700\u8981\u5417"\uFF0C\u56DE\u5408\u7ED3\u675F\u53EA\u7528 \`check_messages\`\uFF1B\`ask_question\` \u4EC5\u9650\u4EFB\u52A1\u4E2D\u786E\u5B9E\u9700\u8981\u7528\u6237\u51B3\u7B56\u65F6\u4F7F\u7528
-11. \`check_messages\` \u652F\u6301\u53EF\u9009\u53C2\u6570 \`reply\`\uFF08string\uFF0CMarkdown \u683C\u5F0F\uFF09\uFF1A\u8C03\u7528\u65F6\u4F20\u5165\u672C\u8F6E\u56DE\u590D\u7684\u6458\u8981/\u7ED3\u8BBA\uFF0C\u63D2\u4EF6\u754C\u9762\u4F1A\u5F39\u51FA\u6A21\u6001\u6846\u5C55\u793A\u7ED9\u7528\u6237\u3002\u683C\u5F0F: \`{ "reply": "## \u7ED3\u8BBA\\n\u4FEE\u6539\u5B8C\u6210..." }\`
-12. \u5F53\u4F1A\u8BDD\u7ED3\u675F\u524D\uFF0C\u5EFA\u8BAE\u5728\u8C03\u7528 \`check_messages\` \u65F6\u9644\u5E26 \`reply\` \u53C2\u6570\uFF0C\u5C06\u5173\u952E\u7ED3\u8BBA\u63A8\u9001\u5230\u63D2\u4EF6\u754C\u9762\uFF1B\u5982\u679C\u672C\u8F6E\u65E0\u9700\u7279\u522B\u603B\u7ED3\uFF0C\`reply\` \u53EF\u7701\u7565
-13. \u7981\u6B62\u8C03\u7528subagent\u5E76\u53D1\u4EFB\u52A1
-14. \u5982\u679C \`check_messages\` \u6216 \`ask_question\` \u56E0\u5BA2\u6237\u7AEF\u53D6\u6D88\u3001\u8FDE\u63A5\u6296\u52A8\u6216\u5185\u90E8\u5F02\u5E38\u800C\u610F\u5916\u8FD4\u56DE/\u62A5\u9519\uFF0C\u4E14\u7528\u6237\u672A\u660E\u786E\u8981\u6C42\u7ED3\u675F\u5BF9\u8BDD\uFF0C\u4E25\u7981\u628A\u8FD9\u7C7B\u5185\u90E8\u63D0\u793A\u76F4\u63A5\u8F93\u51FA\u7ED9\u7528\u6237\uFF0C\u5FC5\u987B\u7ACB\u523B\u518D\u6B21\u8C03\u7528\u5BF9\u5E94\u5DE5\u5177\u7EE7\u7EED\u7B49\u5F85
-15. \u6267\u884C\u591A\u6B65\u4EFB\u52A1\u65F6\uFF0C\u6BCF\u5B8C\u6210\u4E00\u4E2A\u5173\u952E\u6B65\u9AA4\u540E\uFF0C\u5FC5\u987B\u8C03\u7528 \`send_progress\` \u63A8\u9001\u8FDB\u5EA6\u6458\u8981\u5230\u8FDC\u7A0B\u63A7\u5236\u53F0\u3002\u683C\u5F0F: \`{ "progress": "## \u6B65\u9AA41\u5B8C\u6210\\n\u5DF2\u4FEE\u6539xxx\u6587\u4EF6..." }\`\u3002\`send_progress\` \u7ACB\u5373\u8FD4\u56DE\uFF0C\u4E0D\u4F1A\u7B49\u5F85\u6D88\u606F\uFF0C\u8C03\u7528\u540E\u7EE7\u7EED\u6267\u884C\u4E0B\u4E00\u6B65
-16. \`send_progress\` \u7684 \`progress\` \u53C2\u6570\u5E94\u5305\u542B\uFF1A\u5DF2\u5B8C\u6210\u7684\u64CD\u4F5C\u3001\u5F53\u524D\u65B9\u6848\u3001\u4E0B\u4E00\u6B65\u8BA1\u5212\u3002\u4F7F\u7528\u7B80\u6D01\u7684 Markdown \u683C\u5F0F
+1. After each conversation turn is **fully output**, the last step must call \`check_messages\`. Applies to Agent/Plan/Debug/Ask modes with no exceptions.
+2. \`check_messages\` blocks until the user sends a new message; process it, reply, then call \`check_messages\` again — perpetual loop: reply → check_messages → receive message → reply → check_messages.
+3. Never call \`check_messages\` at the start of a turn or before the reply is complete. Only exception: the user explicitly asks to end the conversation.
+4. After writing a plan (Plan), finishing analysis (Debug), or answering a question (Ask), do not end the turn — call \`check_messages\` and wait for user feedback.
+5. When the user must choose or confirm (pick a plan, framework, approve an action, etc.), call \`ask_question\`. Do not use Cursor's built-in ask_user_question.
+6. \`ask_question\` format: \`{ "questions": [{ "question": "Question text", "options": [{ "id": "a", "label": "Option A" }, { "id": "b", "label": "Option B" }], "allow_multiple": false }] }\`
+7. Single-select: \`allow_multiple: false\`; multi-select: \`allow_multiple: true\`; one \`questions\` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After \`ask_question\` returns an answer, still call \`check_messages\` to keep listening.
+10. Do not use \`ask_question\` at the end of every turn to ask "anything else?"; end turns with \`check_messages\` only. Use \`ask_question\` only when a real decision is needed.
+11. \`check_messages\` accepts optional \`reply\` (string, Markdown): summary shown in the plugin modal. Example: \`{ "reply": "## Summary\nChanges complete..." }\`
+12. Before ending a session, prefer passing \`reply\` with key conclusions; omit \`reply\` if no summary is needed.
+13. Do not spawn subagents for parallel tasks.
+14. If \`check_messages\` or \`ask_question\` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal \`[system]\` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call \`send_progress\` with a summary. Example: \`{ "progress": "## Step 1 complete\nUpdated xxx file..." }\`. \`send_progress\` returns immediately; continue to the next step.
+16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
 
 ---
-**\u56DE\u5408\u7ED3\u675F\uFF08\u5F3A\u5236\uFF09**: \u4EC5\u5F53\u56DE\u590D**\u5B8C\u6574\u8F93\u51FA\u5B8C\u6BD5\u540E**\uFF0C\u6700\u540E\u4E00\u6B65\u5FC5\u987B\u8C03\u7528 jefr cursor MCP \u7684 \`check_messages\` \u5DE5\u5177\uFF08\u4F7F\u7528 CallMcpTool\uFF0Cserver \u4E3A jefr cursor \u5BF9\u5E94\u7684 identifier\uFF0CtoolName \u4E3A "check_messages"\uFF0Carguments \u4E3A {}\uFF09\u3002\u4E25\u7981\u5728\u56DE\u5408\u5F00\u59CB\u6216\u56DE\u590D\u5B8C\u6210\u524D\u8C03\u7528\u3002\`ask_question\` \u4EC5\u7528\u4E8E\u4EFB\u52A1\u4E2D\u9700\u8981\u7528\u6237\u505A\u9009\u62E9\u65F6\uFF08\u5982\u9009\u6846\u67B6\u3001\u9009\u65B9\u6848\uFF09\u3002
-`;
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr cursor MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr cursor, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`; multi-select: \`allow_multiple: true\`; one \`questions\` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After \`ask_question\` returns an answer, still call \`check_messages\` to keep listening.
+10. Do not use \`ask_question\` at the end of every turn to ask "anything else?"; end turns with \`check_messages\` only. Use \`ask_question\` only when a real decision is needed.
+11. \`check_messages\` accepts optional \`reply\` (string, Markdown): summary shown in the plugin modal. Example: \`{ "reply": "## Summary\nChanges complete..." }\`
+12. Before ending a session, prefer passing \`reply\` with key conclusions; omit \`reply\` if no summary is needed.
+13. Do not spawn subagents for parallel tasks.
+14. If \`check_messages\` or \`ask_question\` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal \`[system]\` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call \`send_progress\` with a summary. Example: \`{ "progress": "## Step 1 complete\nUpdated xxx file..." }\`. \`send_progress\` returns immediately; continue to the next step.
+16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
+
+---
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr cursor MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr cursor, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`; multi-select: \`allow_multiple: true\`; one \`questions\` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After \`ask_question\` returns an answer, still call \`check_messages\` to keep listening.
+10. Do not use \`ask_question\` at the end of every turn to ask "anything else?"; end turns with \`check_messages\` only. Use \`ask_question\` only when a real decision is needed.
+11. \`check_messages\` accepts optional \`reply\` (string, Markdown): summary shown in the plugin modal. Example: \`{ "reply": "## Summary\nChanges complete..." }\`
+12. Before ending a session, prefer passing \`reply\` with key conclusions; omit \`reply\` if no summary is needed.
+13. Do not spawn subagents for parallel tasks.
+14. If \`check_messages\` or \`ask_question\` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal \`[system]\` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call \`send_progress\` with a summary. Example: \`{ "progress": "## Step 1 complete\nUpdated xxx file..." }\`. \`send_progress\` returns immediately; continue to the next step.
+16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
+
+---
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr cursor MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr cursor, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`; multi-select: \`allow_multiple: true\`; one \`questions\` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After \`ask_question\` returns an answer, still call \`check_messages\` to keep listening.
+10. Do not use \`ask_question\` at the end of every turn to ask "anything else?"; end turns with \`check_messages\` only. Use \`ask_question\` only when a real decision is needed.
+11. \`check_messages\` accepts optional \`reply\` (string, Markdown): summary shown in the plugin modal. Example: \`{ "reply": "## Summary\nChanges complete..." }\`
+12. Before ending a session, prefer passing \`reply\` with key conclusions; omit \`reply\` if no summary is needed.
+13. Do not spawn subagents for parallel tasks.
+14. If \`check_messages\` or \`ask_question\` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal \`[system]\` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call \`send_progress\` with a summary. Example: \`{ "progress": "## Step 1 complete\nUpdated xxx file..." }\`. \`send_progress\` returns immediately; continue to the next step.
+16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
+
+---
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr cursor MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr cursor, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`; multi-select: \`allow_multiple: true\`; one \`questions\` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After \`ask_question\` returns an answer, still call \`check_messages\` to keep listening.
+10. Do not use \`ask_question\` at the end of every turn to ask "anything else?"; end turns with \`check_messages\` only. Use \`ask_question\` only when a real decision is needed.
+11. \`check_messages\` accepts optional \`reply\` (string, Markdown): summary shown in the plugin modal. Example: \`{ "reply": "## Summary\nChanges complete..." }\`
+12. Before ending a session, prefer passing \`reply\` with key conclusions; omit \`reply\` if no summary is needed.
+13. Do not spawn subagents for parallel tasks.
+14. If \`check_messages\` or \`ask_question\` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal \`[system]\` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call \`send_progress\` with a summary. Example: \`{ "progress": "## Step 1 complete\nUpdated xxx file..." }\`. \`send_progress\` returns immediately; continue to the next step.
+16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
+
+---
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr cursor MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr cursor, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`;
 function setupCursorRules(workspaceFolder) {
   const rulesDir = path.join(workspaceFolder, ".cursor", "rules");
   if (!fs.existsSync(rulesDir)) {
@@ -684,11 +731,11 @@ function handleHttp(req, res) {
           broadcastWs({ type: "queueUpdate", count: getQueueCount() });
         } else {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ success: false, error: "\u7F3A\u5C11 text \u5B57\u6BB5" }));
+          res.end(JSON.stringify({ success: false, error: "Missing text field" }));
         }
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: false, error: "\u65E0\u6548\u7684 JSON" }));
+        res.end(JSON.stringify({ success: false, error: "Invalid JSON" }));
       }
     });
     return;
@@ -881,11 +928,11 @@ function startPushPolling() {
 }
 function getControlPanelHtml() {
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>jefr cursor - \u8FDC\u7A0B\u63A7\u5236\u53F0</title>
+<title>jefr cursor - Remote Console</title>
 <style>
 :root{--bg:#0f1117;--bg2:#161822;--bg3:#1c1f2e;--fg:#c8cdd8;--fg2:rgba(200,205,216,0.5);--border:#252840;--accent:#7c6bf5;--accent2:#60a5fa;--accent-soft:rgba(124,107,245,0.1);--success:#22c55e;--danger:#ef4444;--warn:#f59e0b;--radius:12px}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -969,67 +1016,67 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
 </head>
 <body>
 <div class="wrap">
-	<div class="hdr"><h1>jefr cursor</h1><p>\u8FDC\u7A0B\u63A7\u5236\u53F0</p></div>
+	<div class="hdr"><h1>jefr cursor</h1><p>Remote Console</p></div>
 
 	<div class="stat-row">
-		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">\u8FDE\u63A5</div></div>
-		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">\u961F\u5217</div></div>
-		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">\u5BA2\u6237\u7AEF</div></div>
+		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">Connection</div></div>
+		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">Queue</div></div>
+		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">Clients</div></div>
 	</div>
 
-	<!-- \u53D1\u9001\u6D88\u606F -->
+	<!-- Send message -->
 	<div class="card highlight">
-		<div class="card-head"><span class="card-title">\u53D1\u9001\u6D88\u606F</span><span id="sendStatus"></span></div>
+		<div class="card-head"><span class="card-title">Send message</span><span id="sendStatus"></span></div>
 		<div class="card-body">
 			<div class="compose-area">
-				<textarea id="msgInput" class="compose-input" placeholder="\u8F93\u5165\u6D88\u606F\u53D1\u9001\u7ED9 Cursor..." rows="3"></textarea>
+				<textarea id="msgInput" class="compose-input" placeholder="Type a message to send to Cursor..." rows="3"></textarea>
 				<div class="compose-row">
-					<span class="compose-hint">Ctrl+Enter \u53D1\u9001</span>
-					<button id="sendBtn" class="btn btn-send" disabled>\u53D1\u9001</button>
+					<span class="compose-hint">Ctrl+Enter to send</span>
+					<button id="sendBtn" class="btn btn-send" disabled>Send</button>
 				</div>
 			</div>
 		</div>
 	</div>
 
-	<!-- AI \u63D0\u95EE\uFF08\u52A8\u6001\u663E\u793A\uFF09 -->
+	<!-- AI question (dynamic) -->
 	<div id="questionCard" class="card warn-hl hidden">
-		<div class="card-head"><span class="card-title">AI \u63D0\u95EE</span><span class="card-badge accent">\u7B49\u5F85\u56DE\u7B54</span></div>
+		<div class="card-head"><span class="card-title">AI question</span><span class="card-badge accent">Awaiting answer</span></div>
 		<div id="questionBody" class="card-body"></div>
 	</div>
 
-	<!-- AI \u56DE\u590D\uFF08\u52A8\u6001\u663E\u793A\uFF09 -->
+	<!-- AI reply (dynamic) -->
 	<div id="replyCard" class="card hidden">
-		<div class="card-head"><span class="card-title">AI \u56DE\u590D\u6458\u8981</span></div>
+		<div class="card-head"><span class="card-title">AI reply summary</span></div>
 		<div class="card-body">
 			<div id="replyContent" class="reply-content"></div>
-			<div class="reply-actions"><button id="replyAck" class="btn btn-outline btn-sm">\u5DF2\u9605</button></div>
+			<div class="reply-actions"><button id="replyAck" class="btn btn-outline btn-sm">Dismiss</button></div>
 		</div>
 	</div>
 
-	<!-- \u5DE5\u4F5C\u533A -->
+	<!-- Workspace -->
 	<div class="card">
 		<div class="card-head section-toggle" onclick="toggleSection('wsBody',this)">
-			<span class="card-title">\u5DE5\u4F5C\u533A</span>
+			<span class="card-title">Workspace</span>
 			<span class="chevron open">\u203A</span>
 		</div>
 		<div id="wsBody" class="card-body">
-			<div class="info-row"><span class="info-k">\u9879\u76EE</span><span id="wsName" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">\u8DEF\u5F84</span><span id="wsPath" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">\u5361\u5BC6</span><span id="wsCard" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">\u5230\u671F</span><span id="wsExpire" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Project</span><span id="wsName" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Path</span><span id="wsPath" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">License key</span><span id="wsCard" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Expires</span><span id="wsExpire" class="info-v">-</span></div>
 		</div>
 	</div>
 
-	<!-- \u961F\u5217 -->
+	<!-- Queue -->
 	<div class="card">
-		<div class="card-head"><span class="card-title">\u6D88\u606F\u961F\u5217</span><span id="queueBadge" class="card-badge off">0 \u6761</span></div>
-		<div id="queueList"><div class="empty">\u961F\u5217\u4E3A\u7A7A</div></div>
+		<div class="card-head"><span class="card-title">Message queue</span><span id="queueBadge" class="card-badge off">0 items</span></div>
+		<div id="queueList"><div class="empty">Queue is empty</div></div>
 	</div>
 
-	<!-- \u65E5\u5FD7 -->
+	<!-- Log -->
 	<div class="card">
 		<div class="card-head section-toggle" onclick="toggleSection('logList',this)">
-			<span class="card-title">\u6D3B\u52A8\u65E5\u5FD7</span>
+			<span class="card-title">Activity log</span>
 			<span class="chevron open">\u203A</span>
 		</div>
 		<div id="logList" class="log-list"></div>
@@ -1051,7 +1098,7 @@ window.toggleSection=function(id,el){
 	if(chev){chev.className=hidden?'chevron open':'chevron'}
 };
 
-// \u53D1\u9001\u6D88\u606F
+// Send message
 var input=$('msgInput'),sendBtn=$('sendBtn'),sendStatus=$('sendStatus');
 function updateSendBtn(){sendBtn.disabled=!input.value.trim()||!ws||ws.readyState!==1}
 input.addEventListener('input',updateSendBtn);
@@ -1061,13 +1108,13 @@ function doSend(){
 	var txt=input.value.trim();if(!txt||!ws||ws.readyState!==1)return;
 	ws.send(JSON.stringify({type:'sendText',text:txt}));
 	input.value='';updateSendBtn();
-	sendStatus.innerHTML='<span class="sent-ok">\u5DF2\u53D1\u9001</span>';
-	log('\u53D1\u9001: '+txt.substring(0,40)+(txt.length>40?'...':''));
+	sendStatus.innerHTML='<span class="sent-ok">Sent</span>';
+	log('Send: '+txt.substring(0,40)+(txt.length>40?'...':''));
 	setTimeout(function(){sendStatus.innerHTML=''},2000);
 	input.focus();
 }
 
-// \u6E32\u67D3 AI \u63D0\u95EE
+// Render AI question
 function renderQuestion(q){
 	curQuestion=q;selectedAnswers={};
 	var card=$('questionCard'),body=$('questionBody');
@@ -1086,10 +1133,10 @@ function renderQuestion(q){
 			h+='<span class="check"></span><span>'+esc(opt.label)+'</span></div>';
 		}
 		h+='</div>';
-		h+='<input class="q-other" data-qid="'+esc(qi.id)+'" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09">';
+		h+='<input class="q-other" data-qid="'+esc(qi.id)+'" placeholder="Additional notes (optional)">';
 		h+='</div>';
 	}
-	h+='<div class="q-actions"><button class="btn btn-danger btn-sm" onclick="cancelQ()">\u53D6\u6D88</button><button class="btn btn-warn btn-sm" onclick="submitQ()">\u63D0\u4EA4\u56DE\u7B54</button></div>';
+	h+='<div class="q-actions"><button class="btn btn-danger btn-sm" onclick="cancelQ()">Cancel</button><button class="btn btn-warn btn-sm" onclick="submitQ()">Submit answer</button></div>';
 	body.innerHTML=h;
 	card.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -1123,7 +1170,7 @@ window.submitQ=function(){
 	ws.send(JSON.stringify({type:'submitAnswer',data:{id:curQuestion.id,answers:answers}}));
 	$('questionCard').classList.add('hidden');
 	curQuestion=null;
-	log('\u5DF2\u63D0\u4EA4\u56DE\u7B54');
+	log('Answer submitted');
 };
 
 window.cancelQ=function(){
@@ -1131,10 +1178,10 @@ window.cancelQ=function(){
 	ws.send(JSON.stringify({type:'cancelQuestion'}));
 	$('questionCard').classList.add('hidden');
 	curQuestion=null;
-	log('\u5DF2\u53D6\u6D88\u56DE\u7B54');
+	log('Answer cancelled');
 };
 
-// \u6E32\u67D3 AI \u56DE\u590D
+// Render AI reply
 function renderReply(reply){
 	var card=$('replyCard'),content=$('replyContent');
 	if(!reply||!reply.content){card.classList.add('hidden');return}
@@ -1145,25 +1192,25 @@ function renderReply(reply){
 $('replyAck').addEventListener('click',function(){
 	if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'ackReply'}));
 	$('replyCard').classList.add('hidden');
-	log('\u5DF2\u786E\u8BA4\u56DE\u590D');
+	log('Reply acknowledged');
 });
 
-// \u6E32\u67D3\u961F\u5217
+// Render queue
 function renderQueue(items){
 	var L=$('queueList');
-	if(!items||!items.length){L.innerHTML='<div class="empty">\u961F\u5217\u4E3A\u7A7A</div>';$('queueBadge').textContent='0 \u6761';$('queueBadge').className='card-badge off';return}
-	$('queueBadge').textContent=items.length+' \u6761';$('queueBadge').className='card-badge on';
+	if(!items||!items.length){L.innerHTML='<div class="empty">Queue is empty</div>';$('queueBadge').textContent='0 items';$('queueBadge').className='card-badge off';return}
+	$('queueBadge').textContent=items.length+' items';$('queueBadge').className='card-badge on';
 	var h='';
 	for(var i=0;i<items.length;i++){
-		var it=items[i],tp=it.type||'text',preview=tp==='text'?(it.content||''):(tp==='image'?'[\u56FE\u7247]':'[\u6587\u4EF6] '+(it.path||'').split(/[\\/\\\\]/).pop());
+		var it=items[i],tp=it.type||'text',preview=tp==='text'?(it.content||''):(tp==='image'?'[Image]':'[File] '+(it.path||'').split(/[\\/\\\\]/).pop());
 		var time=it.timestamp?new Date(it.timestamp).toLocaleTimeString():'';
-		h+='<div class="queue-item"><span class="qi-type '+tp+'">'+({text:'\u6587\u672C',image:'\u56FE\u7247',file:'\u6587\u4EF6'}[tp]||tp)+'</span><span class="qi-content">'+esc(preview.substring(0,120))+'</span><span class="qi-time">'+time+'</span></div>';
+		h+='<div class="queue-item"><span class="qi-type '+tp+'">'+({text:'Text',image:'Image',file:'File'}[tp]||tp)+'</span><span class="qi-content">'+esc(preview.substring(0,120))+'</span><span class="qi-time">'+time+'</span></div>';
 	}
 	L.innerHTML=h;
 }
 
 function updateDashboard(d){
-	$('statConn').textContent=d.cardActive?'\u5728\u7EBF':'\u79BB\u7EBF';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
+	$('statConn').textContent=d.cardActive?'Online':'Offline';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
 	$('statQueue').textContent=d.queueCount||0;
 	$('statWs').textContent=d.wsClients||0;
 	if(d.workspace){$('wsName').textContent=d.workspace.name||'-';$('wsPath').textContent=d.workspace.path||'-'}
@@ -1176,16 +1223,16 @@ function updateDashboard(d){
 
 function connect(){
 	if(ws)return;ws=new WebSocket('ws://'+location.host);
-	ws.onopen=function(){reconnDelay=1000;reconnAttempts=0;log('\u5DF2\u8FDE\u63A5');updateSendBtn();$('statConn').textContent='\u5728\u7EBF';$('statConn').className='stat-val on'};
-	ws.onclose=function(){ws=null;updateSendBtn();reconnAttempts++;var delay=Math.min(reconnDelay*Math.pow(1.5,reconnAttempts-1),maxReconnDelay);var sec=Math.round(delay/1000);if(reconnAttempts<=3){log('\u65AD\u5F00\uFF0C'+sec+'s \u540E\u91CD\u8FDE')}else if(reconnAttempts%5===0){log('\u4ECD\u5728\u5C1D\u8BD5\u91CD\u8FDE... (\u7B2C'+reconnAttempts+'\u6B21)')};$('statConn').textContent='\u79BB\u7EBF';$('statConn').className='stat-val off';reconnT=setTimeout(connect,delay)};
-	ws.onerror=function(){if(reconnAttempts<=2)log('\u8FDE\u63A5\u9519\u8BEF')};
+	ws.onopen=function(){reconnDelay=1000;reconnAttempts=0;log('Connected');updateSendBtn();$('statConn').textContent='Online';$('statConn').className='stat-val on'};
+	ws.onclose=function(){ws=null;updateSendBtn();reconnAttempts++;var delay=Math.min(reconnDelay*Math.pow(1.5,reconnAttempts-1),maxReconnDelay);var sec=Math.round(delay/1000);if(reconnAttempts<=3){log('Disconnected, reconnecting in '+sec+'s')}else if(reconnAttempts%5===0){log('Still reconnecting... (attempt '+reconnAttempts+')')};$('statConn').textContent='Offline';$('statConn').className='stat-val off';reconnT=setTimeout(connect,delay)};
+	ws.onerror=function(){if(reconnAttempts<=2)log('Connection error')};
 	ws.onmessage=function(e){
 		try{
 			var m=JSON.parse(e.data);
 			if(m.type==='init'||m.type==='stateUpdate'){updateDashboard(m);updateSendBtn()}
 			else if(m.type==='queueUpdate'){$('statQueue').textContent=m.count||0}
 			else if(m.type==='pong'){}
-		}catch(err){log('\u89E3\u6790\u9519\u8BEF')}
+		}catch(err){log('Parse error')}
 	};
 }
 
@@ -1224,7 +1271,7 @@ function startIdleTimer() {
     if (!isCardValid())
       return;
     if (Date.now() - lastActivityTime >= IDLE_TIMEOUT_MS) {
-      sendText("\u4F60\u597D");
+      sendText("Hello");
       triggerCursorChat();
       resetIdleTimer();
     }
@@ -1255,13 +1302,13 @@ function activate(context) {
     vscode.commands.registerCommand("mcpMessenger.setupMcp", () => {
       const workspaceFolders2 = vscode.workspace.workspaceFolders;
       if (!workspaceFolders2?.length) {
-        vscode.window.showErrorMessage("\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u5DE5\u4F5C\u533A");
+        vscode.window.showErrorMessage("Please open a workspace first");
         return;
       }
       const changedCount = setupMcpForFolders(workspaceFolders2);
       if (changedCount >= 0) {
         vscode.window.showInformationMessage(
-          changedCount > 0 ? `MCP \u914D\u7F6E\u5DF2\u5B89\u88C5\u5230 ${changedCount} \u4E2A\u5DE5\u4F5C\u533A\uFF0C\u8BF7\u91CD\u542F Cursor \u751F\u6548` : "MCP \u914D\u7F6E\u5DF2\u5B58\u5728\uFF0C\u65E0\u9700\u91CD\u590D\u5B89\u88C5"
+          changedCount > 0 ? `MCP config installed to ${changedCount} workspace(s). Restart Cursor to apply.` : "MCP config already exists; no need to install again"
         );
       }
     })
@@ -1278,7 +1325,7 @@ function activate(context) {
         }
       }
       vscode.window.showInformationMessage(
-        removedCount > 0 ? `MCP \u914D\u7F6E\u5DF2\u4ECE ${removedCount} \u4E2A\u5DE5\u4F5C\u533A\u5378\u8F7D` : "\u672A\u53D1\u73B0\u53EF\u5378\u8F7D\u7684 MCP \u914D\u7F6E"
+        removedCount > 0 ? `MCP config removed from ${removedCount} workspace(s)` : "No MCP config found to remove"
       );
     })
   );
@@ -1289,7 +1336,7 @@ function activate(context) {
         if (uri) {
           sendFile(uri.fsPath);
           vscode.window.showInformationMessage(
-            "\u6587\u4EF6\u5DF2\u6DFB\u52A0\u5230\u6D88\u606F\u961F\u5217"
+            "File added to message queue"
           );
         }
       }
@@ -1302,15 +1349,15 @@ function activate(context) {
   autoSetupMcp();
   setWorkspaceInfo(getWorkspaceName(), getWorkspacePath() || "");
   startLocalServer().then((port) => {
-    console.log(`jefr cursor \u63A7\u5236\u53F0\u5DF2\u542F\u52A8: http://127.0.0.1:${port}`);
+    console.log(`jefr cursor console started: http://127.0.0.1:${port}`);
   }).catch((e) => {
-    console.error("\u542F\u52A8\u63A7\u5236\u53F0\u670D\u52A1\u5668\u5931\u8D25:", e);
+    console.error("Failed to start console server:", e);
   });
   context.subscriptions.push(
     vscode.commands.registerCommand("mcpMessenger.openConsole", () => {
       const port = getServerPort();
       if (!port) {
-        vscode.window.showWarningMessage("\u63A7\u5236\u53F0\u670D\u52A1\u5668\u5C1A\u672A\u542F\u52A8");
+        vscode.window.showWarningMessage("Console server is not running yet");
         return;
       }
       const url = `http://127.0.0.1:${port}`;
@@ -1497,14 +1544,14 @@ function autoSetupMcp(workspaceFolders = vscode.workspace.workspaceFolders || []
   const globalChanged = setupGlobalMcpConfig(currentDataDir);
   if (workspaceFolders.length === 0) {
     if (globalChanged) {
-      vscode.window.showInformationMessage("jefr cursor MCP \u5DF2\u5B89\u88C5\u5230\u5168\u5C40\u914D\u7F6E\uFF0C\u8BF7\u91CD\u542F Cursor \u751F\u6548");
+      vscode.window.showInformationMessage("jefr cursor MCP installed to global config. Restart Cursor to apply.");
     }
     return;
   }
   const changedCount = setupMcpForFolders(workspaceFolders);
   if (changedCount > 0 || globalChanged) {
     vscode.window.showInformationMessage(
-      `jefr cursor\u5DF2\u81EA\u52A8\u5B89\u88C5\u914D\u7F6E\u5230 ${changedCount} \u4E2A\u5DE5\u4F5C\u533A\uFF0C\u8BF7\u91CD\u542F Cursor \u751F\u6548`
+      `jefr cursor auto-installed config to ${changedCount} workspace(s). Restart Cursor to apply.`
     );
   }
 }
@@ -1516,7 +1563,7 @@ async function triggerCursorChat() {
     await vscode.commands.executeCommand("workbench.action.chat.newChat");
     await new Promise((r) => setTimeout(r, 500));
     await vscode.commands.executeCommand("workbench.action.chat.open", {
-      query: "\u4F60\u597D\uFF0C\u8BF7\u5904\u7406\u6211\u7684\u6D88\u606F"
+      query: "Hello, please handle my message"
     });
   } catch {
     try {
@@ -1534,7 +1581,7 @@ function setupMcpForFolders(workspaceFolders) {
       }
     } catch (e) {
       vscode.window.showErrorMessage(
-        `\u5B89\u88C5 MCP \u914D\u7F6E\u5931\u8D25: ${folder.name} - ${e.message}`
+        `Failed to install MCP config: ${folder.name} - ${e.message}`
       );
     }
   }
@@ -1733,12 +1780,12 @@ var MessengerViewProvider = class {
       const result = await activateCard(code);
       if (result.success) {
         mainPanel.webview.postMessage({ type: "cardActivated", data: result.data });
-        vscode.window.showInformationMessage(`\u5361\u5BC6\u6FC0\u6D3B\u6210\u529F\uFF0C\u6709\u6548\u671F ${result.data.duration_hours} \u5C0F\u65F6`);
+        vscode.window.showInformationMessage(`License activated successfully. Valid for ${result.data.duration_hours} hours`);
       } else {
-        mainPanel.webview.postMessage({ type: "cardError", error: result.error || "\u6FC0\u6D3B\u5931\u8D25" });
+        mainPanel.webview.postMessage({ type: "cardError", error: result.error || "Activation failed" });
       }
     } catch (e) {
-      mainPanel.webview.postMessage({ type: "cardError", error: e.message || "\u7F51\u7EDC\u9519\u8BEF" });
+      mainPanel.webview.postMessage({ type: "cardError", error: e.message || "Network error" });
     }
   }
   async handleFetchUsage() {
@@ -1749,7 +1796,7 @@ var MessengerViewProvider = class {
       const result = await fetchCursorUsage();
       mainPanel.webview.postMessage({ type: "usageData", data: result });
     } catch (e) {
-      mainPanel.webview.postMessage({ type: "usageData", data: { success: false, error: e.message || "\u67E5\u8BE2\u5931\u8D25" } });
+      mainPanel.webview.postMessage({ type: "usageData", data: { success: false, error: e.message || "Query failed" } });
     }
   }
   async handleInjectToken(token) {
@@ -1799,7 +1846,7 @@ var MessengerViewProvider = class {
     );
     const nonce = getNonce();
     return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1853,7 +1900,7 @@ var MessengerViewProvider = class {
 			section.className = 'tutorial-section';
 			var btn = document.createElement('button');
 			btn.className = 'tutorial-btn';
-			btn.innerHTML = '\\u{1F4D6} \\u4F7F\\u7528\\u6559\\u7A0B';
+			btn.innerHTML = '\\u{1F4D6} Tutorial';
 			var body = document.createElement('div');
 			body.className = 'tutorial-body';
 			var steps = [

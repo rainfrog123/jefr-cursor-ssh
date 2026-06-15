@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -90,64 +90,64 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
 	<div class="hdr"><h1>jefr cursor</h1><p>Local Console</p></div>
 
 	<div class="stat-row">
-		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">连接</div></div>
-		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">队列</div></div>
-		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">客户端</div></div>
+		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">Connection</div></div>
+		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">Queue</div></div>
+		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">Clients</div></div>
 	</div>
 
-	<!-- 发送消息 -->
+	<!-- Send message -->
 	<div class="card highlight">
-		<div class="card-head"><span class="card-title">发送消息</span><span id="sendStatus"></span></div>
+		<div class="card-head"><span class="card-title">Send message</span><span id="sendStatus"></span></div>
 		<div class="card-body">
 			<div class="compose-area">
-				<textarea id="msgInput" class="compose-input" placeholder="输入消息发送给 Cursor..." rows="3"></textarea>
+				<textarea id="msgInput" class="compose-input" placeholder="Type a message to send to Cursor..." rows="3"></textarea>
 				<div class="compose-row">
-					<span class="compose-hint">Ctrl+Enter 发送</span>
-					<button id="sendBtn" class="btn btn-send" disabled>发送</button>
+					<span class="compose-hint">Ctrl+Enter to send</span>
+					<button id="sendBtn" class="btn btn-send" disabled>Send</button>
 				</div>
 			</div>
 		</div>
 	</div>
 
-	<!-- AI 提问（动态显示） -->
+	<!-- AI question (dynamic) -->
 	<div id="questionCard" class="card warn-hl hidden">
-		<div class="card-head"><span class="card-title">AI 提问</span><span class="card-badge accent">等待回答</span></div>
+		<div class="card-head"><span class="card-title">AI question</span><span class="card-badge accent">Awaiting answer</span></div>
 		<div id="questionBody" class="card-body"></div>
 	</div>
 
-	<!-- AI 回复（动态显示） -->
+	<!-- AI reply (dynamic) -->
 	<div id="replyCard" class="card hidden">
-		<div class="card-head"><span class="card-title">AI 回复摘要</span></div>
+		<div class="card-head"><span class="card-title">AI reply summary</span></div>
 		<div class="card-body">
 			<div id="replyContent" class="reply-content"></div>
-			<div class="reply-actions"><button id="replyAck" class="btn btn-outline btn-sm">已阅</button></div>
+			<div class="reply-actions"><button id="replyAck" class="btn btn-outline btn-sm">Dismiss</button></div>
 		</div>
 	</div>
 
-	<!-- 工作区 -->
+	<!-- Workspace -->
 	<div class="card">
 		<div class="card-head section-toggle" onclick="toggleSection('wsBody',this)">
-			<span class="card-title">工作区</span>
+			<span class="card-title">Workspace</span>
 			<span class="chevron open">›</span>
 		</div>
 		<div id="wsBody" class="card-body">
-			<div class="info-row"><span class="info-k">项目</span><span id="wsName" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">路径</span><span id="wsPath" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">卡密</span><span id="wsCard" class="info-v">-</span></div>
-			<div class="info-row"><span class="info-k">到期</span><span id="wsExpire" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Project</span><span id="wsName" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Path</span><span id="wsPath" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">License key</span><span id="wsCard" class="info-v">-</span></div>
+			<div class="info-row"><span class="info-k">Expires</span><span id="wsExpire" class="info-v">-</span></div>
 		</div>
 	</div>
 
-	<!-- 队列 -->
+	<!-- Queue -->
 	<div class="card">
-		<div class="card-head"><span class="card-title">消息队列</span><span id="queueBadge" class="card-badge off">0 条</span></div>
-		<div id="queueList"><div class="empty">队列为空</div></div>
+		<div class="card-head"><span class="card-title">Message queue</span><span id="queueBadge" class="card-badge off">0 items</span></div>
+		<div id="queueList"><div class="empty">Queue is empty</div></div>
 	</div>
 
-	<!-- 日志 -->
+	<!-- Log -->
 	<div class="card">
 		<div class="card-head section-toggle" onclick="toggleSection('logList',this)">
-			<span class="card-title">活动日志</span>
+			<span class="card-title">Activity log</span>
 			<span class="chevron open">›</span>
 		</div>
 		<div id="logList" class="log-list"></div>
@@ -169,7 +169,7 @@ window.toggleSection=function(id,el){
 	if(chev){chev.className=hidden?'chevron open':'chevron'}
 };
 
-// 发送消息
+// Send message
 var input=$('msgInput'),sendBtn=$('sendBtn'),sendStatus=$('sendStatus');
 function updateSendBtn(){sendBtn.disabled=!input.value.trim()||!ws||ws.readyState!==1}
 input.addEventListener('input',updateSendBtn);
@@ -179,13 +179,13 @@ function doSend(){
 	var txt=input.value.trim();if(!txt||!ws||ws.readyState!==1)return;
 	ws.send(JSON.stringify({type:'sendText',text:txt}));
 	input.value='';updateSendBtn();
-	sendStatus.innerHTML='<span class="sent-ok">已发送</span>';
-	log('发送: '+txt.substring(0,40)+(txt.length>40?'...':''));
+	sendStatus.innerHTML='<span class="sent-ok">Sent</span>';
+	log('Send: '+txt.substring(0,40)+(txt.length>40?'...':''));
 	setTimeout(function(){sendStatus.innerHTML=''},2000);
 	input.focus();
 }
 
-// 渲染 AI 提问
+// Render AI question
 function renderQuestion(q){
 	curQuestion=q;selectedAnswers={};
 	var card=$('questionCard'),body=$('questionBody');
@@ -204,10 +204,10 @@ function renderQuestion(q){
 			h+='<span class="check"></span><span>'+esc(opt.label)+'</span></div>';
 		}
 		h+='</div>';
-		h+='<input class="q-other" data-qid="'+esc(qi.id)+'" placeholder="补充说明（可选）">';
+		h+='<input class="q-other" data-qid="'+esc(qi.id)+'" placeholder="Additional notes (optional)">';
 		h+='</div>';
 	}
-	h+='<div class="q-actions"><button class="btn btn-danger btn-sm" onclick="cancelQ()">取消</button><button class="btn btn-warn btn-sm" onclick="submitQ()">提交回答</button></div>';
+	h+='<div class="q-actions"><button class="btn btn-danger btn-sm" onclick="cancelQ()">Cancel</button><button class="btn btn-warn btn-sm" onclick="submitQ()">Submit answer</button></div>';
 	body.innerHTML=h;
 	card.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -241,7 +241,7 @@ window.submitQ=function(){
 	ws.send(JSON.stringify({type:'submitAnswer',data:{id:curQuestion.id,answers:answers}}));
 	$('questionCard').classList.add('hidden');
 	curQuestion=null;
-	log('已提交回答');
+	log('Answer submitted');
 };
 
 window.cancelQ=function(){
@@ -249,10 +249,10 @@ window.cancelQ=function(){
 	ws.send(JSON.stringify({type:'cancelQuestion'}));
 	$('questionCard').classList.add('hidden');
 	curQuestion=null;
-	log('已取消回答');
+	log('Answer cancelled');
 };
 
-// 渲染 AI 回复
+// Render AI reply
 function renderReply(reply){
 	var card=$('replyCard'),content=$('replyContent');
 	if(!reply||!reply.content){card.classList.add('hidden');return}
@@ -263,25 +263,25 @@ function renderReply(reply){
 $('replyAck').addEventListener('click',function(){
 	if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'ackReply'}));
 	$('replyCard').classList.add('hidden');
-	log('已确认回复');
+	log('Reply acknowledged');
 });
 
-// 渲染队列
+// Render queue
 function renderQueue(items){
 	var L=$('queueList');
-	if(!items||!items.length){L.innerHTML='<div class="empty">队列为空</div>';$('queueBadge').textContent='0 条';$('queueBadge').className='card-badge off';return}
-	$('queueBadge').textContent=items.length+' 条';$('queueBadge').className='card-badge on';
+	if(!items||!items.length){L.innerHTML='<div class="empty">Queue is empty</div>';$('queueBadge').textContent='0 items';$('queueBadge').className='card-badge off';return}
+	$('queueBadge').textContent=items.length+' items';$('queueBadge').className='card-badge on';
 	var h='';
 	for(var i=0;i<items.length;i++){
-		var it=items[i],tp=it.type||'text',preview=tp==='text'?(it.content||''):(tp==='image'?'[图片]':'[文件] '+(it.path||'').split(/[\\/\\\\]/).pop());
+		var it=items[i],tp=it.type||'text',preview=tp==='text'?(it.content||''):(tp==='image'?'[Image]':'[File] '+(it.path||'').split(/[\\/\\\\]/).pop());
 		var time=it.timestamp?new Date(it.timestamp).toLocaleTimeString():'';
-		h+='<div class="queue-item"><span class="qi-type '+tp+'">'+({text:'文本',image:'图片',file:'文件'}[tp]||tp)+'</span><span class="qi-content">'+esc(preview.substring(0,120))+'</span><span class="qi-time">'+time+'</span></div>';
+		h+='<div class="queue-item"><span class="qi-type '+tp+'">'+({text:'Text',image:'Image',file:'File'}[tp]||tp)+'</span><span class="qi-content">'+esc(preview.substring(0,120))+'</span><span class="qi-time">'+time+'</span></div>';
 	}
 	L.innerHTML=h;
 }
 
 function updateDashboard(d){
-	$('statConn').textContent=d.cardActive?'在线':'离线';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
+	$('statConn').textContent=d.cardActive?'Online':'Offline';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
 	$('statQueue').textContent=d.queueCount||0;
 	$('statWs').textContent=d.wsClients||0;
 	if(d.workspace){$('wsName').textContent=d.workspace.name||'-';$('wsPath').textContent=d.workspace.path||'-'}
@@ -294,16 +294,16 @@ function updateDashboard(d){
 
 function connect(){
 	if(ws)return;ws=new WebSocket('ws://'+location.host);
-	ws.onopen=function(){log('已连接');updateSendBtn()};
-	ws.onclose=function(){ws=null;updateSendBtn();log('断开，3s 重连');reconnT=setTimeout(connect,3000)};
-	ws.onerror=function(){log('连接错误')};
+	ws.onopen=function(){log('Connected');updateSendBtn()};
+	ws.onclose=function(){ws=null;updateSendBtn();log('Disconnected, reconnecting in 3s');reconnT=setTimeout(connect,3000)};
+	ws.onerror=function(){log('Connection error')};
 	ws.onmessage=function(e){
 		try{
 			var m=JSON.parse(e.data);
 			if(m.type==='init'||m.type==='stateUpdate'){updateDashboard(m);updateSendBtn()}
 			else if(m.type==='queueUpdate'){$('statQueue').textContent=m.count||0}
 			else if(m.type==='pong'){}
-		}catch(err){log('解析错误')}
+		}catch(err){log('Parse error')}
 	};
 }
 
