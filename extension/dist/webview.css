@@ -1757,3 +1757,18 @@ input:focus-visible {
 .pasted-images + .input-box {
 	border-top: 1px solid var(--border);
 }
+
+/* ========== Text selection ========== */
+.history ::selection,
+.history-item-v2 ::selection,
+.hi-text::selection,
+.modal-body ::selection,
+.input-box::selection {
+	background: color-mix(in srgb, var(--accent) 38%, transparent);
+	color: var(--fg);
+}
+.history ::-moz-selection,
+.hi-text::-moz-selection {
+	background: color-mix(in srgb, var(--accent) 38%, transparent);
+	color: var(--fg);
+}
