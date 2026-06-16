@@ -230,12 +230,28 @@ body {
 	border-radius: var(--radius);
 	padding: 16px;
 	margin-bottom: 10px;
-	flex-shrink: 0;
+	flex-shrink: 1;
+	min-height: 0;
+	max-height: 70vh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: var(--border-strong) transparent;
 	order: 3;
 }
 
+.question-panel::-webkit-scrollbar { width: 6px; }
+.question-panel::-webkit-scrollbar-track { background: transparent; }
+.question-panel::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
+
 .question-panel h4 {
-	margin-bottom: 12px;
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	background: color-mix(in srgb, var(--bg) 92%, #60a5fa 8%);
+	padding-bottom: 10px;
+	margin-bottom: 10px;
+	border-bottom: 1px solid var(--border);
 	font-size: var(--text-base);
 	color: #60a5fa;
 	font-weight: 700;
@@ -278,7 +294,7 @@ body {
 
 .option {
 	display: flex;
-	align-items: center;
+	align-items: flex-start;
 	gap: 8px;
 	cursor: pointer;
 	padding: 7px 10px;
@@ -288,13 +304,15 @@ body {
 }
 
 .option:hover {
-	background: rgba(255,255,255,0.05);
+	background: color-mix(in srgb, var(--fg) 5%, transparent);
 }
 
 .option input {
 	accent-color: var(--accent);
 	width: 15px;
 	height: 15px;
+	margin-top: 3px;
+	flex-shrink: 0;
 }
 
 .other-input {
@@ -317,6 +335,10 @@ body {
 	display: flex;
 	gap: 8px;
 	margin-top: 10px;
+	position: sticky;
+	bottom: 0;
+	padding-top: 10px;
+	background: linear-gradient(to top, var(--bg) 55%, transparent);
 }
 
 /* ========== MCP rules fold area - hidden ========== */
@@ -341,7 +363,7 @@ body {
 }
 
 .mcp-copy-inline:hover {
-	background: rgba(255,255,255,0.06) !important;
+	background: color-mix(in srgb, var(--fg) 6%, transparent) !important;
 	color: var(--fg) !important;
 	transform: none !important;
 	box-shadow: none !important;
@@ -358,7 +380,7 @@ body {
 	font-weight: 500;
 	padding: 2px 8px;
 	border-radius: 10px;
-	background: rgba(255,255,255,0.03);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
 	letter-spacing: 0.3px;
 }
 
@@ -407,7 +429,7 @@ body {
 }
 
 .history-item:hover {
-	background: rgba(255,255,255,0.04);
+	background: color-mix(in srgb, var(--fg) 4%, transparent);
 	color: var(--fg);
 }
 
@@ -428,7 +450,7 @@ body {
 	height: 52px;
 	border-radius: var(--radius-sm);
 	overflow: hidden;
-	border: 1px solid rgba(255,255,255,0.1);
+	border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
 	transition: transform 0.15s;
 }
 
@@ -634,7 +656,7 @@ input:focus-visible {
 }
 
 .btn-secondary:hover {
-	background: rgba(255,255,255,0.08);
+	background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .btn-small {
@@ -756,7 +778,7 @@ input:focus-visible {
 }
 
 .close-btn:hover {
-	background: rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 
 .modal-body {
@@ -909,16 +931,16 @@ input:focus-visible {
 }
 
 .queue-tab-item {
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
+	border: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: var(--radius-sm);
 	padding: 10px 12px;
 	transition: all 0.15s;
 }
 
 .queue-tab-item:hover {
-	background: rgba(255,255,255,0.05);
-	border-color: rgba(255,255,255,0.1);
+	background: color-mix(in srgb, var(--fg) 5%, transparent);
+	border-color: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
 .queue-tab-item.editing {
@@ -1135,6 +1157,9 @@ input:focus-visible {
 	border-radius: var(--radius);
 	padding: 14px 16px;
 	display: none;
+	max-height: 50vh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 .tutorial-body.show {
@@ -1150,7 +1175,7 @@ input:focus-visible {
 }
 
 .tutorial-step + .tutorial-step {
-	border-top: 1px solid rgba(255,255,255,0.04);
+	border-top: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .step-num {
@@ -1196,7 +1221,7 @@ input:focus-visible {
 	gap: 8px;
 	padding: 0 2px 12px;
 	scrollbar-width: thin;
-	scrollbar-color: rgba(255,255,255,0.08) transparent;
+	scrollbar-color: color-mix(in srgb, var(--fg) 8%, transparent) transparent;
 }
 
 .usage-loading {
@@ -1290,7 +1315,7 @@ input:focus-visible {
 	gap: 8px;
 	margin-top: 10px;
 	padding-top: 10px;
-	border-top: 1px solid rgba(255,255,255,0.06);
+	border-top: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	font-size: var(--text-xs);
 	color: var(--fg-secondary);
 }
@@ -1314,7 +1339,7 @@ input:focus-visible {
 	padding: 3px 12px;
 	border-radius: 20px;
 	text-transform: capitalize;
-	background: rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 6%, transparent);
 	color: var(--fg);
 }
 
@@ -1344,8 +1369,8 @@ input:focus-visible {
 }
 
 .usage-progress-card {
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
+	border: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: var(--radius);
 	padding: 14px 16px;
 }
@@ -1380,7 +1405,7 @@ input:focus-visible {
 
 .usage-progress-bar-bg {
 	height: 6px;
-	background: rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: 3px;
 	overflow: hidden;
 }
@@ -1404,8 +1429,8 @@ input:focus-visible {
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
+	border: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: var(--radius);
 	overflow: hidden;
 }
@@ -1415,11 +1440,11 @@ input:focus-visible {
 	justify-content: space-between;
 	align-items: center;
 	padding: 10px 16px;
-	background: rgba(255,255,255,0.01);
+	background: color-mix(in srgb, var(--fg) 1%, transparent);
 }
 
 .usage-detail-item + .usage-detail-item {
-	border-top: 1px solid rgba(255,255,255,0.04);
+	border-top: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .usage-detail-label {
@@ -1446,10 +1471,10 @@ input:focus-visible {
 	font-size: var(--text-xs);
 	color: var(--fg-secondary);
 	padding: 8px 12px;
-	background: rgba(255,255,255,0.02);
+	background: color-mix(in srgb, var(--fg) 2%, transparent);
 	border-radius: var(--radius-sm);
 	line-height: 1.5;
-	border: 1px solid rgba(255,255,255,0.04);
+	border: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .usage-detail-sub {
@@ -1461,8 +1486,8 @@ input:focus-visible {
 
 /* ========== Model usage stats ========== */
 .usage-models-section {
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
+	border: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: var(--radius);
 	padding: 14px 16px;
 }
@@ -1473,7 +1498,7 @@ input:focus-visible {
 	color: var(--fg-secondary);
 	margin-bottom: 10px;
 	padding-bottom: 6px;
-	border-bottom: 1px solid rgba(255,255,255,0.04);
+	border-bottom: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .usage-models-list {
@@ -1504,7 +1529,7 @@ input:focus-visible {
 .usage-model-bar-wrap {
 	flex: 1;
 	height: 6px;
-	background: rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: 3px;
 	overflow: hidden;
 	min-width: 30px;
@@ -1557,8 +1582,8 @@ input:focus-visible {
 
 /* ── Token injection card ── */
 .token-inject-card {
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: color-mix(in srgb, var(--fg) 3%, transparent);
+	border: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 	border-radius: var(--radius);
 	padding: 10px 16px;
 }
@@ -1621,8 +1646,8 @@ input:focus-visible {
 /* ========== Global scrollbar ========== */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 8%, transparent); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--fg) 15%, transparent); }
 
 /* ========== Redesign polish (v2) ========== */
 .app { gap: 2px; }
@@ -1724,6 +1749,9 @@ input:focus-visible {
 	gap: 6px;
 	flex-wrap: wrap;
 	padding: 8px 10px 0;
+	max-height: 124px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 .attach-file-chip {
@@ -1771,4 +1799,29 @@ input:focus-visible {
 .hi-text::-moz-selection {
 	background: color-mix(in srgb, var(--accent) 38%, transparent);
 	color: var(--fg);
+}
+
+/* ========== Keyboard focus visibility (a11y) ========== */
+.btn:focus-visible,
+.tab-btn:focus-visible,
+.compose-icon-btn:focus-visible,
+.compose-send-btn:focus-visible,
+.close-btn:focus-visible,
+.hi-resend-btn:focus-visible,
+.tutorial-btn:focus-visible,
+.token-inject-toggle:focus-visible,
+.mcp-copy-inline:focus-visible {
+	outline: 2px solid var(--focus-border);
+	outline-offset: 2px;
+}
+
+.option:focus-within {
+	outline: 2px solid var(--focus-border);
+	outline-offset: 1px;
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.option input:focus-visible {
+	outline: 2px solid var(--focus-border) !important;
+	outline-offset: 2px;
 }
