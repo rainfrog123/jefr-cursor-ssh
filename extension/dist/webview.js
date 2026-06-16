@@ -92,3 +92,173 @@ react/cjs/react-jsx-runtime.production.min.js:
   if (document.body) start();
   else document.addEventListener('DOMContentLoaded', start);
 })();
+
+/* jefr: render Markdown in AI reply bubbles */
+;(function () {
+  if (window.__jefrMarkdown) return;
+  window.__jefrMarkdown = true;
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function inline(s) {
+    s = s.replace(/`([^`]+)`/g, function (_, c) { return '<code class="md-code">' + c + '</code>'; });
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');
+    s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    return s;
+  }
+
+  function render(src) {
+    var lines = src.replace(/\r\n/g, '\n').split('\n');
+    var out = [];
+    var i = 0;
+    var listType = null;
+    function closeList() { if (listType) { out.push('</' + listType + '>'); listType = null; } }
+    while (i < lines.length) {
+      var line = lines[i];
+      var fence = line.match(/^\s*```(.*)$/);
+      if (fence) {
+        closeList();
+        var buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;
+        out.push('<pre class="md-pre"><code>' + esc(buf.join('\n')) + '</code></pre>');
+        continue;
+      }
+      var h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { closeList(); out.push('<div class="md-h md-h' + h[1].length + '">' + inline(esc(h[2])) + '</div>'); i++; continue; }
+      var ul = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (ul) {
+        if (listType !== 'ul') { closeList(); out.push('<ul class="md-ul">'); listType = 'ul'; }
+        out.push('<li>' + inline(esc(ul[1])) + '</li>'); i++; continue;
+      }
+      var ol = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (ol) {
+        if (listType !== 'ol') { closeList(); out.push('<ol class="md-ol">'); listType = 'ol'; }
+        out.push('<li>' + inline(esc(ol[1])) + '</li>'); i++; continue;
+      }
+      if (/^\s*$/.test(line)) { closeList(); i++; continue; }
+      closeList();
+      var para = [line];
+      i++;
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^\s*```/.test(lines[i]) &&
+             !/^(#{1,6})\s/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) {
+        para.push(lines[i]); i++;
+      }
+      out.push('<div class="md-p">' + inline(esc(para.join('\n'))).replace(/\n/g, '<br>') + '</div>');
+    }
+    closeList();
+    return out.join('');
+  }
+
+  function process() {
+    var nodes = document.querySelectorAll('.history-item-v2.ai-reply .hi-text');
+    for (var j = 0; j < nodes.length; j++) {
+      var el = nodes[j];
+      if (el.classList.contains('md-rendered') && el.querySelector('[data-md]')) continue;
+      var text = el.textContent;
+      if (!text) continue;
+      el.setAttribute('data-md-raw', text);
+      el.innerHTML = '<span data-md="1">' + render(text) + '</span>';
+      el.classList.add('md-rendered');
+    }
+  }
+
+  var obs = new MutationObserver(function () { process(); });
+  function start() {
+    try { obs.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+    process();
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();
+
+/* jefr: header font-size controls (A- / % reset / A+) */
+;(function () {
+  if (window.__jefrFontSize) return;
+  window.__jefrFontSize = true;
+
+  var BASE = { '--text-xs': 12, '--text-sm': 13, '--text-base': 14, '--text-md': 15, '--text-lg': 16 };
+  var MIN = 0.8, MAX = 2.0, STEP = 0.1;
+  var scale = 1;
+  try { var s = parseFloat(localStorage.getItem('jefrFontScale')); if (s && !isNaN(s)) scale = s; } catch (_) {}
+
+  function clamp(v) { return Math.min(MAX, Math.max(MIN, Math.round(v * 100) / 100)); }
+
+  function apply() {
+    var root = document.documentElement;
+    for (var k in BASE) root.style.setProperty(k, (BASE[k] * scale).toFixed(2) + 'px');
+    try { localStorage.setItem('jefrFontScale', String(scale)); } catch (_) {}
+    var lbl = document.querySelector('.jefr-fs-label');
+    if (lbl) lbl.textContent = Math.round(scale * 100) + '%';
+  }
+
+  function setScale(v) { scale = clamp(v); apply(); }
+
+  function mkBtn(cls, label, title, fn) {
+    var b = document.createElement('button');
+    b.className = cls; b.type = 'button'; b.title = title; b.textContent = label;
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); fn(); });
+    return b;
+  }
+
+  function inject() {
+    if (document.querySelector('.jefr-fs-ctrl')) return true;
+    var host = document.querySelector('.header-right') || document.querySelector('.header');
+    if (!host) return false;
+    var wrap = document.createElement('div');
+    wrap.className = 'jefr-fs-ctrl';
+    wrap.appendChild(mkBtn('jefr-fs-btn', 'A\u2212', 'Decrease font size', function () { setScale(scale - STEP); }));
+    wrap.appendChild(mkBtn('jefr-fs-label', Math.round(scale * 100) + '%', 'Reset font size', function () { setScale(1); }));
+    wrap.appendChild(mkBtn('jefr-fs-btn', 'A+', 'Increase font size', function () { setScale(scale + STEP); }));
+    if (host.classList.contains('header-right')) host.insertBefore(wrap, host.firstChild);
+    else host.appendChild(wrap);
+    return true;
+  }
+
+  function start() {
+    apply();
+    inject();
+    var obs = new MutationObserver(function () { inject(); });
+    try { obs.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();
+
+/* jefr: press Enter to submit the AI question (Shift+Enter = newline) */
+;(function () {
+  if (window.__jefrEnterSubmit) return;
+  window.__jefrEnterSubmit = true;
+
+  function findSubmit() {
+    var actions = document.querySelector('.question-panel .question-actions');
+    if (!actions) return null;
+    var btns = actions.querySelectorAll('button');
+    if (!btns.length) return null;
+    for (var i = 0; i < btns.length; i++) {
+      var t = (btns[i].textContent || '');
+      if (/submit|confirm|answer|send|ok|done/i.test(t) && !/cancel|dismiss/i.test(t)) return btns[i];
+    }
+    return btns[btns.length - 1];
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+    var panel = document.querySelector('.question-panel');
+    if (!panel) return;
+    var active = document.activeElement;
+    if (active && active !== document.body && !panel.contains(active)) return;
+    if (active && active.tagName === 'TEXTAREA') return;
+    var btn = findSubmit();
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.click();
+  }, true);
+})();

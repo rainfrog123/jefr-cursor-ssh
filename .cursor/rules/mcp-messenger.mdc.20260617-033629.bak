@@ -1,0 +1,29 @@
+---
+description: Automatically call Messenger MCP to check for pending messages
+globs: "**/*"
+alwaysApply: true
+---
+
+# MCP tool usage rules
+
+1. After each conversation turn is **fully output**, the last step must call `check_messages`. Applies to Agent/Plan/Debug/Ask modes with no exceptions.
+2. `check_messages` blocks until the user sends a new message; process it, reply, then call `check_messages` again — perpetual loop: reply → check_messages → receive message → reply → check_messages.
+3. Never call `check_messages` at the start of a turn or before the reply is complete. Only exception: the user explicitly asks to end the conversation.
+4. After writing a plan (Plan), finishing analysis (Debug), or answering a question (Ask), do not end the turn — call `check_messages` and wait for user feedback.
+5. When the user must choose or confirm (pick a plan, framework, approve an action, etc.), call `ask_question`. Do not use Cursor's built-in ask_user_question.
+6. `ask_question` format: `{ "questions": [{ "question": "Question text", "options": [{ "id": "a", "label": "Option A" }, { "id": "b", "label": "Option B" }], "allow_multiple": false }] }`
+7. Single-select: `allow_multiple: false`; multi-select: `allow_multiple: true`; one `questions` array may mix both.
+8. Users may add custom text (Other field) on each question; no extra option needed for that.
+9. After `ask_question` returns an answer, still call `check_messages` to keep listening.
+10. Do not use `ask_question` at the end of every turn to ask "anything else?"; end turns with `check_messages` only. Use `ask_question` only when a real decision is needed.
+11. `check_messages` **must always** include `reply` (string, Markdown): the full response shown in the plugin modal. Never call `check_messages` with empty arguments. Example: `{ "reply": "## Summary
+Changes complete..." }`
+12. The `reply` field is **mandatory on every** `check_messages` call — it must contain your complete reply to the user, since the plugin panel only displays `reply` content (the Cursor chat window text is not visible there).
+13. Do not spawn subagents for parallel tasks.
+14. If `check_messages` or `ask_question` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal `[system]` text to the user — call the tool again immediately.
+15. During multi-step work, after each key step call `send_progress` with a summary. Example: `{ "progress": "## Step 1 complete
+Updated xxx file..." }`. `send_progress` returns immediately; continue to the next step.
+16. `progress` should include: what was done, current approach, next step. Use concise Markdown.
+
+---
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr MCP `check_messages` tool (CallMcpTool, server identifier for jefr, toolName `check_messages`, arguments `{ "reply": "<your full reply here>" }`). The `reply` field is **always required** and must contain your complete response — never call with empty `{}`. Never call it at the start of a turn or before the reply is done. Use `ask_question` only when the user must make a choice during the task (e.g. pick a framework or plan).

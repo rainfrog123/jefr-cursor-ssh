@@ -213,6 +213,45 @@ body {
 	gap: 8px;
 }
 
+/* jefr: header font-size controls */
+.jefr-fs-ctrl {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.jefr-fs-btn,
+.jefr-fs-label {
+	font-family: var(--font-ui);
+	border: 1px solid var(--border);
+	background: var(--accent-soft);
+	color: var(--accent);
+	border-radius: 6px;
+	cursor: pointer;
+	padding: 2px 7px;
+	font-weight: 700;
+	line-height: 1.2;
+	font-size: 12px;
+	transition: background 0.15s;
+}
+
+.jefr-fs-label {
+	min-width: 40px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	font-family: var(--font-mono);
+}
+
+.jefr-fs-btn:hover,
+.jefr-fs-label:hover {
+	background: rgba(124,107,245,0.25);
+}
+
+.jefr-fs-btn:active,
+.jefr-fs-label:active {
+	transform: translateY(1px);
+}
+
 .countdown {
 	font-size: var(--text-xs);
 	font-family: var(--font-mono);
@@ -1120,6 +1159,97 @@ input:focus-visible {
 	color: var(--accent-strong);
 }
 
+/* jefr: rendered Markdown in AI replies */
+.hi-text.md-rendered {
+	white-space: normal;
+}
+
+.hi-text.md-rendered .md-p {
+	margin: 0 0 8px 0;
+}
+
+.hi-text.md-rendered .md-p:last-child {
+	margin-bottom: 0;
+}
+
+.hi-text.md-rendered .md-h {
+	font-weight: 700;
+	margin: 10px 0 6px 0;
+	line-height: 1.3;
+}
+
+.hi-text.md-rendered .md-h:first-child {
+	margin-top: 0;
+}
+
+.hi-text.md-rendered .md-h1 { font-size: 1.3em; }
+.hi-text.md-rendered .md-h2 { font-size: 1.2em; }
+.hi-text.md-rendered .md-h3 { font-size: 1.1em; }
+.hi-text.md-rendered .md-h4,
+.hi-text.md-rendered .md-h5,
+.hi-text.md-rendered .md-h6 { font-size: 1em; }
+
+.hi-text.md-rendered .md-ul,
+.hi-text.md-rendered .md-ol {
+	margin: 4px 0 8px 0;
+	padding-left: 22px;
+}
+
+.hi-text.md-rendered .md-ul:last-child,
+.hi-text.md-rendered .md-ol:last-child {
+	margin-bottom: 0;
+}
+
+.hi-text.md-rendered li {
+	margin: 2px 0;
+}
+
+.hi-text.md-rendered strong {
+	font-weight: 700;
+}
+
+.hi-text.md-rendered em {
+	font-style: italic;
+}
+
+.hi-text.md-rendered del {
+	opacity: 0.7;
+}
+
+.hi-text.md-rendered a {
+	color: var(--accent-strong, var(--accent));
+	text-decoration: underline;
+}
+
+.hi-text.md-rendered .md-code {
+	font-family: var(--font-mono);
+	font-size: 0.92em;
+	background: color-mix(in srgb, var(--input-bg) 60%, var(--border) 40%);
+	border-radius: 4px;
+	padding: 1px 5px;
+}
+
+.hi-text.md-rendered .md-pre {
+	margin: 6px 0 8px 0;
+	padding: 10px 12px;
+	background: color-mix(in srgb, var(--input-bg) 70%, var(--border) 30%);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	overflow-x: auto;
+}
+
+.hi-text.md-rendered .md-pre:last-child {
+	margin-bottom: 0;
+}
+
+.hi-text.md-rendered .md-pre code {
+	font-family: var(--font-mono);
+	font-size: 0.9em;
+	white-space: pre;
+	background: none;
+	padding: 0;
+}
+
 /* ========== Tutorial ========== */
 .tutorial-section {
 	order: 4;
@@ -1824,4 +1954,19 @@ input:focus-visible {
 .option input:focus-visible {
 	outline: 2px solid var(--focus-border) !important;
 	outline-offset: 2px;
+}
+
+/* ========== Compact header (jefr title + version) ========== */
+.header {
+	padding: 6px 12px;
+	margin-bottom: 8px;
+}
+
+.header h3 {
+	font-size: var(--text-md);
+}
+
+.header .version-tag {
+	font-size: var(--text-xs);
+	padding: 2px 8px;
 }

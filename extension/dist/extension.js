@@ -1517,21 +1517,23 @@ function autoSetupMcp(workspaceFolders = vscode.workspace.workspaceFolders || []
   }
 }
 async function triggerCursorChat() {
-  if (chatTriggered)
-    return;
-  chatTriggered = true;
-  try {
-    await vscode.commands.executeCommand("workbench.action.chat.newChat");
-    await new Promise((r) => setTimeout(r, 500));
-    await vscode.commands.executeCommand("workbench.action.chat.open", {
-      query: "Hello, please handle my message"
-    });
-  } catch {
-    try {
-      await vscode.commands.executeCommand("workbench.action.chat.open");
-    } catch {
-    }
-  }
+  // Disabled for now: do not auto-open/focus the Cursor chat.
+  return;
+  // if (chatTriggered)
+  //   return;
+  // chatTriggered = true;
+  // try {
+  //   await vscode.commands.executeCommand("workbench.action.chat.newChat");
+  //   await new Promise((r) => setTimeout(r, 500));
+  //   await vscode.commands.executeCommand("workbench.action.chat.open", {
+  //     query: "Hello, please handle my message"
+  //   });
+  // } catch {
+  //   try {
+  //     await vscode.commands.executeCommand("workbench.action.chat.open");
+  //   } catch {
+  //   }
+  // }
 }
 function setupMcpForFolders(workspaceFolders) {
   let changedCount = 0;
@@ -1910,6 +1912,35 @@ var MessengerViewProvider = class {
 		}
 
 
+		/* \u2500\u2500 Font zoom (Ctrl/Cmd +/-/0 and Ctrl+wheel) \u2500\u2500 */
+		var ZOOM_KEY = 'jefr.zoom';
+		var ZOOM_MIN = 0.5, ZOOM_MAX = 3, ZOOM_STEP = 0.1;
+		function getZoom(){
+			var z = parseFloat(localStorage.getItem(ZOOM_KEY));
+			return (isFinite(z) && z > 0) ? z : 1;
+		}
+		function applyZoom(z){
+			z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z*100)/100));
+			document.body.style.zoom = z;
+			try { localStorage.setItem(ZOOM_KEY, String(z)); } catch(e){}
+			return z;
+		}
+		function setupZoom(){
+			applyZoom(getZoom());
+			window.addEventListener('keydown', function(e){
+				if(!(e.ctrlKey || e.metaKey)) return;
+				var k = e.key;
+				if(k === '+' || k === '=' ){ e.preventDefault(); applyZoom(getZoom()+ZOOM_STEP); }
+				else if(k === '-' || k === '_'){ e.preventDefault(); applyZoom(getZoom()-ZOOM_STEP); }
+				else if(k === '0'){ e.preventDefault(); applyZoom(1); }
+			}, true);
+			window.addEventListener('wheel', function(e){
+				if(!(e.ctrlKey || e.metaKey)) return;
+				e.preventDefault();
+				applyZoom(getZoom() + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP));
+			}, { passive: false, capture: true });
+		}
+
 		/* \u2500\u2500 Enhanced history (placeholder) \u2500\u2500 */
 		function enhanceHistory(){}
 
@@ -1943,7 +1974,7 @@ var MessengerViewProvider = class {
 		}
 
 		/* \u2500\u2500 Init \u2500\u2500 */
-		function init(){ setupDragDrop(); enhanceHistory(); setupTutorial(); }
+		function init(){ setupZoom(); setupDragDrop(); enhanceHistory(); setupTutorial(); }
 		if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); }
 		else { init(); }
 	})();
