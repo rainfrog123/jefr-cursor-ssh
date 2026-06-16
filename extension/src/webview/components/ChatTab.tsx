@@ -12,6 +12,7 @@ export function ChatTab(props: {
   attachments: Attachment[];
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
   appendHistory: (item: Omit<HistoryItem, "index">) => void;
+  onClearHistory: () => void;
 }): JSX.Element {
   return (
     <>
@@ -20,6 +21,8 @@ export function ChatTab(props: {
         attachments={props.attachments}
         setAttachments={props.setAttachments}
         appendHistory={props.appendHistory}
+        onClearHistory={props.onClearHistory}
+        canClear={props.history.length > 0}
       />
     </>
   );
@@ -113,6 +116,8 @@ function Composer(props: {
   attachments: Attachment[];
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
   appendHistory: (item: Omit<HistoryItem, "index">) => void;
+  onClearHistory: () => void;
+  canClear: boolean;
 }): JSX.Element {
   const [text, setText] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -263,9 +268,20 @@ function Composer(props: {
             +
           </button>
         </div>
-        <button className="compose-send-btn" disabled={!canSend} onClick={send}>
-          Send
-        </button>
+        <div className="compose-actions-right">
+          {props.canClear && (
+            <button
+              className="compose-clear-btn"
+              title="Clear chat history"
+              onClick={props.onClearHistory}
+            >
+              Clear
+            </button>
+          )}
+          <button className="compose-send-btn" disabled={!canSend} onClick={send}>
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );

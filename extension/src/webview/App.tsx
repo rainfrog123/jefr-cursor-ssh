@@ -155,11 +155,7 @@ export function App(): JSX.Element {
 
   return (
     <div className="app">
-      <Header
-        version={version}
-        onOpenConsole={() => post({ type: "openConsole" })}
-        onClearHistory={tab === "chat" && history.length > 0 ? clearHistory : undefined}
-      />
+      <Header version={version} onOpenConsole={() => post({ type: "openConsole" })} />
 
       {question && <QuestionPanel question={question} />}
 
@@ -181,6 +177,7 @@ export function App(): JSX.Element {
           attachments={attachments}
           setAttachments={setAttachments}
           appendHistory={appendHistory}
+          onClearHistory={clearHistory}
         />
       )}
       {tab === "queue" && <QueueTab queue={queue} />}

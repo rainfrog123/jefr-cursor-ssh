@@ -13,7 +13,6 @@ import {
 export function Header(props: {
   version: string;
   onOpenConsole: () => void;
-  onClearHistory?: () => void;
 }): JSX.Element {
   const [scale, setScale] = useState<number>(() => loadScale());
 
@@ -52,15 +51,6 @@ export function Header(props: {
           </button>
         </div>
         {props.version && <span className="version-tag">v{props.version}</span>}
-        {props.onClearHistory && (
-          <button
-            className="btn-clear-history"
-            title="Clear chat history"
-            onClick={props.onClearHistory}
-          >
-            Clear
-          </button>
-        )}
         <button className="btn-console" onClick={props.onOpenConsole}>
           Console
         </button>
