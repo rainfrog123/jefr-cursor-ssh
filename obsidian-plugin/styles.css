@@ -73,6 +73,37 @@
   background: rgba(217, 119, 6, 0.14);
 }
 
+.jefr-agent {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.jefr-agent::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.jefr-agent-ready {
+  color: var(--color-green, #16a34a);
+  background: rgba(22, 163, 74, 0.12);
+}
+.jefr-agent-busy {
+  color: var(--color-orange, #d97706);
+  background: rgba(217, 119, 6, 0.14);
+}
+.jefr-agent-idle {
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+}
+
 .jefr-header-right {
   display: flex;
   align-items: center;

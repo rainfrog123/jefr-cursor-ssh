@@ -120,7 +120,10 @@ export type InboundMessage =
   | { type: "cardError"; error: string }
   | { type: "usageLoading" }
   | { type: "usageData"; data: UsageData }
-  | { type: "serverInfo"; data: { port: number; clients: number } };
+  | { type: "serverInfo"; data: { port: number; clients: number } }
+  | { type: "workflowState"; running: boolean }
+  | { type: "workflowOutput"; stream: "stdout" | "stderr"; line: string }
+  | { type: "workflowExit"; code: number | null };
 
 /* ------------------------------------------------------------------ */
 /* Messages: webview -> extension host                                 */
@@ -147,4 +150,13 @@ export type OutboundMessage =
   | { type: "injectToken"; token: string }
   | { type: "clearInjectedToken" }
   | { type: "openConsole" }
-  | { type: "getServerInfo" };
+  | { type: "getServerInfo" }
+  | {
+      type: "runWorkflow";
+      autoPrompt?: string;
+      opusPrompt?: string;
+      maxSecs?: number;
+      enterInterval?: number;
+    }
+  | { type: "stopWorkflow" }
+  | { type: "getWorkflowState" };

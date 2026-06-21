@@ -48,7 +48,7 @@ recovered from sources that **are** readable:
 - `components/QuestionPanel.tsx` — `ask_question` UI (single/multi + Other).
 - `components/ChatTab.tsx` — history list + composer (input, attachments).
 - `components/QueueTab.tsx` — pending queue (edit / delete / clear).
-- `components/UsageTab.tsx` — Cursor usage + token injection.
+- `components/GeneralTab.tsx` — General-purpose tab: CDP agent-workflow runner + Cursor usage + token injection.
 
 ## Building (reference)
 

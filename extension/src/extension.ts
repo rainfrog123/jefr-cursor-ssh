@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as crypto from "crypto";
+import { spawn, spawnSync, type ChildProcess } from "child_process";
 
 import {
   setDataDir,
@@ -69,8 +70,194 @@ let lastRemoteQuestionId: string | undefined;
 let idleTimer: ReturnType<typeof setInterval> | undefined;
 let lastActivityTime = Date.now();
 
+// ── Agent workflow automation (CDP) ─────────────────────────────────────────
+// The extension can invoke the Python CDP workflow that spawns a fresh Cursor
+// agent tile, sends a stand-by prompt, switches to Opus, types the invoke-mcp
+// prompt, and holds Enter past "Planning next moves".
+
+/** The CDP automation runner. Lives outside the extension in the user's tools. */
+const WORKFLOW_SCRIPT = path.join(
+  os.homedir(),
+  "blue",
+  "infra",
+  "cursor",
+  "automation",
+  "workflow.py"
+);
+
+let workflowProc: ChildProcess | undefined;
+/** undefined = not probed yet, null = no python found, string = the command. */
+let resolvedPython: string | null | undefined;
+
+/** Find a usable Python interpreter once and cache the result. */
+function resolvePython(): string | null {
+  if (resolvedPython !== undefined) {
+    return resolvedPython;
+  }
+  const candidates =
+    process.platform === "win32"
+      ? ["python", "py", "python3"]
+      : ["python3", "python"];
+  for (const cmd of candidates) {
+    try {
+      const r = spawnSync(cmd, ["--version"], {
+        encoding: "utf-8",
+        windowsHide: true,
+        timeout: 5000,
+      });
+      const out = `${r.stdout || ""}${r.stderr || ""}`;
+      if (!r.error && (r.status === 0 || /python/i.test(out))) {
+        resolvedPython = cmd;
+        return cmd;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  resolvedPython = null;
+  return null;
+}
+
+function postWorkflow(message: Record<string, unknown>): void {
+  mainPanel?.webview.postMessage(message);
+}
+
+interface WorkflowOptions {
+  autoPrompt?: string;
+  opusPrompt?: string;
+  maxSecs?: number;
+  enterInterval?: number;
+  scriptPath?: string;
+}
+
+/** Spawn the CDP workflow and stream its output back to the webview. */
+function runWorkflow(opts: WorkflowOptions): void {
+  if (workflowProc) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: "[jefr] A workflow is already running — stop it first.",
+    });
+    return;
+  }
+
+  const py = resolvePython();
+  if (!py) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: "[jefr] Python not found on PATH (tried python / py / python3).",
+    });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+
+  const script = opts.scriptPath || WORKFLOW_SCRIPT;
+  if (!fs.existsSync(script)) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Workflow script not found: ${script}`,
+    });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+
+  const args: string[] = [script];
+  if (opts.autoPrompt && opts.autoPrompt.trim()) {
+    args.push(opts.autoPrompt);
+  }
+  if (opts.opusPrompt && opts.opusPrompt.trim()) {
+    args.push("--type-text", opts.opusPrompt);
+  }
+  if (typeof opts.maxSecs === "number" && isFinite(opts.maxSecs)) {
+    args.push("--max-secs", String(opts.maxSecs));
+  }
+  if (typeof opts.enterInterval === "number" && isFinite(opts.enterInterval)) {
+    args.push("--enter-interval", String(opts.enterInterval));
+  }
+
+  postWorkflow({ type: "workflowState", running: true });
+  const shown = args
+    .map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))
+    .join(" ");
+  postWorkflow({
+    type: "workflowOutput",
+    stream: "stdout",
+    line: `[jefr] $ ${py} ${shown}`,
+  });
+
+  let proc: ChildProcess;
+  try {
+    proc = spawn(py, args, {
+      cwd: path.dirname(script),
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+    });
+  } catch (e) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Failed to start: ${(e as Error).message}`,
+    });
+    postWorkflow({ type: "workflowState", running: false });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+  workflowProc = proc;
+
+  const pump = (buf: Buffer, stream: "stdout" | "stderr") => {
+    const text = buf.toString();
+    for (const line of text.split(/\r?\n/)) {
+      if (line.length > 0) {
+        postWorkflow({ type: "workflowOutput", stream, line });
+      }
+    }
+  };
+  proc.stdout?.on("data", (d: Buffer) => pump(d, "stdout"));
+  proc.stderr?.on("data", (d: Buffer) => pump(d, "stderr"));
+  proc.on("error", (e: Error) => {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Process error: ${e.message}`,
+    });
+  });
+  proc.on("close", (code: number | null) => {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stdout",
+      line: `[jefr] workflow exited with code ${code}`,
+    });
+    postWorkflow({ type: "workflowState", running: false });
+    postWorkflow({ type: "workflowExit", code });
+    if (workflowProc === proc) {
+      workflowProc = undefined;
+    }
+  });
+}
+
+/** Terminate a running workflow (and its child CDP process tree on Windows). */
+function stopWorkflow(): void {
+  const proc = workflowProc;
+  if (!proc) {
+    return;
+  }
+  try {
+    if (process.platform === "win32" && proc.pid) {
+      spawnSync("taskkill", ["/pid", String(proc.pid), "/t", "/f"], {
+        windowsHide: true,
+      });
+    } else {
+      proc.kill("SIGTERM");
+    }
+  } catch {
+    // best-effort
+  }
+}
+
 // Idle keep-alive: after this long with no activity, re-prime the chat loop.
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function resetIdleTimer(): void {
   lastActivityTime = Date.now();
@@ -241,6 +428,7 @@ export function deactivate(): void {
   if (idleTimer) {
     clearInterval(idleTimer);
   }
+  stopWorkflow();
   stopLocalServer();
 }
 
@@ -588,6 +776,20 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
             type: "serverInfo",
             data: { port: getServerPort(), clients: getConnectedClients() },
           });
+          break;
+        case "runWorkflow":
+          runWorkflow({
+            autoPrompt: msg.autoPrompt,
+            opusPrompt: msg.opusPrompt,
+            maxSecs: msg.maxSecs,
+            enterInterval: msg.enterInterval,
+          });
+          break;
+        case "stopWorkflow":
+          stopWorkflow();
+          break;
+        case "getWorkflowState":
+          postWorkflow({ type: "workflowState", running: !!workflowProc });
           break;
       }
     });

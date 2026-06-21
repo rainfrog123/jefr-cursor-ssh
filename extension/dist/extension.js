@@ -38,6 +38,7 @@ var path3 = __toESM(require("path"));
 var fs3 = __toESM(require("fs"));
 var os3 = __toESM(require("os"));
 var crypto2 = __toESM(require("crypto"));
+var import_child_process = require("child_process");
 
 // src/messenger.ts
 var fs = __toESM(require("fs"));
@@ -52,6 +53,8 @@ var REPLY_FILE = path.join(dataDir, "reply.json");
 var CARD_FILE = path.join(dataDir, "card.json");
 var INJECTED_TOKEN_FILE = path.join(dataDir, "injected-token.json");
 var HISTORY_FILE = path.join(dataDir, "history.json");
+var HEARTBEAT_FILE = path.join(dataDir, "agent-alive.json");
+var QUEUE_LOCK_DIR = path.join(dataDir, "queue.lock");
 var RULES_FILE_NAME = "mcp-messenger.mdc";
 var LEGACY_RULES_FILE_NAME = "system.mdc";
 function setDataDir(dir) {
@@ -63,6 +66,96 @@ function setDataDir(dir) {
   CARD_FILE = path.join(dir, "card.json");
   INJECTED_TOKEN_FILE = path.join(dir, "injected-token.json");
   HISTORY_FILE = path.join(dir, "history.json");
+  HEARTBEAT_FILE = path.join(dir, "agent-alive.json");
+  QUEUE_LOCK_DIR = path.join(dir, "queue.lock");
+}
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+    }
+  }
+}
+function acquireQueueLock(timeoutMs = 2e3) {
+  const start = Date.now();
+  for (; ; ) {
+    try {
+      fs.mkdirSync(QUEUE_LOCK_DIR);
+      return true;
+    } catch {
+      try {
+        const st = fs.statSync(QUEUE_LOCK_DIR);
+        if (Date.now() - st.mtimeMs > 5e3) {
+          try {
+            fs.rmdirSync(QUEUE_LOCK_DIR);
+          } catch {
+          }
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - start > timeoutMs) {
+        return false;
+      }
+      sleepSync(8);
+    }
+  }
+}
+function releaseQueueLock() {
+  try {
+    fs.rmdirSync(QUEUE_LOCK_DIR);
+  } catch {
+  }
+}
+function withQueueLock(fn) {
+  ensureDir();
+  const locked = acquireQueueLock();
+  try {
+    return fn();
+  } finally {
+    if (locked) {
+      releaseQueueLock();
+    }
+  }
+}
+function robustWriteFile(file, data) {
+  let lastErr;
+  for (let i = 0; i < 10; i++) {
+    try {
+      fs.writeFileSync(file, data, "utf-8");
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = e?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw e;
+      }
+      sleepSync(15);
+    }
+  }
+  if (lastErr) {
+    throw lastErr;
+  }
+}
+var AGENT_STALE_MS = 6e3;
+function getAgentStatus() {
+  try {
+    if (!fs.existsSync(HEARTBEAT_FILE)) {
+      return { alive: false, state: "idle" };
+    }
+    const data = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, "utf-8"));
+    const ts = typeof data.ts === "number" ? data.ts : 0;
+    if (Date.now() - ts >= AGENT_STALE_MS) {
+      return { alive: false, state: "idle" };
+    }
+    const state = data.state === "working" ? "working" : "waiting";
+    return { alive: true, state };
+  } catch {
+    return { alive: false, state: "idle" };
+  }
 }
 var HISTORY_CAP = 150;
 function readSharedHistory() {
@@ -122,7 +215,7 @@ function readQueue() {
 }
 function writeQueue(items) {
   ensureDir();
-  fs.writeFileSync(QUEUE_FILE, JSON.stringify(items, null, 2), "utf-8");
+  robustWriteFile(QUEUE_FILE, JSON.stringify(items, null, 2));
 }
 var historySink = null;
 function setHistorySink(fn) {
@@ -138,9 +231,11 @@ function sendText(text) {
     content: text,
     timestamp: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const queue = readQueue();
-  queue.push(item);
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push(item);
+    writeQueue(queue);
+  });
   appendSharedHistory({ id: item.id, kind: "text", text, timestamp: item.timestamp });
   return item;
 }
@@ -152,41 +247,49 @@ function sendImage(filePath, caption) {
     caption,
     timestamp: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const queue = readQueue();
-  queue.push(item);
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push(item);
+    writeQueue(queue);
+  });
   return item;
 }
 function sendFile(filePath) {
-  const queue = readQueue();
-  queue.push({
-    id: makeId(),
-    type: "file",
-    path: filePath,
-    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push({
+      id: makeId(),
+      type: "file",
+      path: filePath,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    writeQueue(queue);
   });
-  writeQueue(queue);
 }
 function getQueueCount() {
   return readQueue().length;
 }
 function deleteQueueItem(id) {
-  const queue = readQueue();
-  writeQueue(queue.filter((item) => item.id !== id));
+  withQueueLock(() => {
+    const queue = readQueue();
+    writeQueue(queue.filter((item) => item.id !== id));
+  });
 }
 function clearQueue() {
-  writeQueue([]);
+  withQueueLock(() => writeQueue([]));
 }
 function updateQueueItem(id, updates) {
-  const queue = readQueue();
-  const idx = queue.findIndex((item) => item.id === id);
-  if (idx === -1) {
-    return;
-  }
-  if (updates.content !== void 0 && queue[idx].type === "text") {
-    queue[idx].content = updates.content;
-  }
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    const idx = queue.findIndex((item) => item.id === id);
+    if (idx === -1) {
+      return;
+    }
+    if (updates.content !== void 0 && queue[idx].type === "text") {
+      queue[idx].content = updates.content;
+    }
+    writeQueue(queue);
+  });
 }
 function readQuestion() {
   if (!fs.existsSync(QUESTION_FILE)) {
@@ -777,6 +880,7 @@ function handleHttp(req, res) {
         hasReply: !!reply,
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
+        agent: getAgentStatus(),
         port: serverPort
       })
     );
@@ -991,6 +1095,7 @@ function buildPushState() {
     history: readSharedHistory(),
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
+    agent: getAgentStatus(),
     port: serverPort
   };
 }
@@ -1149,6 +1254,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
 
 	<div class="stat-row">
 		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">Connection</div></div>
+		<div class="stat-card"><div id="statAgent" class="stat-val off">-</div><div class="stat-label">Agent</div></div>
 		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">Queue</div></div>
 		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">Clients</div></div>
 	</div>
@@ -1406,6 +1512,10 @@ function renderMessages(history){
 }
 function updateDashboard(d){
 	$('statConn').textContent=d.cardActive?'Online':'Offline';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
+	var ag=d.agent||{alive:false,state:'idle'};
+	var agText=ag.alive?(ag.state==='working'?'Busy':'Listening'):'None';
+	$('statAgent').textContent=agText;
+	$('statAgent').className='stat-val '+(ag.alive?(ag.state==='working'?'num':'on'):'off');
 	$('statQueue').textContent=d.queueCount||0;
 	$('statWs').textContent=d.wsClients||0;
 	if(d.workspace){$('wsName').textContent=d.workspace.name||'-';$('wsPath').textContent=d.workspace.path||'-'}
@@ -1456,7 +1566,156 @@ var lastReplyContent;
 var lastRemoteQuestionId;
 var idleTimer;
 var lastActivityTime = Date.now();
-var IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
+var WORKFLOW_SCRIPT = path3.join(
+  os3.homedir(),
+  "blue",
+  "infra",
+  "cursor",
+  "automation",
+  "workflow.py"
+);
+var workflowProc;
+var resolvedPython;
+function resolvePython() {
+  if (resolvedPython !== void 0) {
+    return resolvedPython;
+  }
+  const candidates = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+  for (const cmd of candidates) {
+    try {
+      const r = (0, import_child_process.spawnSync)(cmd, ["--version"], {
+        encoding: "utf-8",
+        windowsHide: true,
+        timeout: 5e3
+      });
+      const out = `${r.stdout || ""}${r.stderr || ""}`;
+      if (!r.error && (r.status === 0 || /python/i.test(out))) {
+        resolvedPython = cmd;
+        return cmd;
+      }
+    } catch {
+    }
+  }
+  resolvedPython = null;
+  return null;
+}
+function postWorkflow(message) {
+  mainPanel?.webview.postMessage(message);
+}
+function runWorkflow(opts) {
+  if (workflowProc) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: "[jefr] A workflow is already running \u2014 stop it first."
+    });
+    return;
+  }
+  const py = resolvePython();
+  if (!py) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: "[jefr] Python not found on PATH (tried python / py / python3)."
+    });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+  const script = opts.scriptPath || WORKFLOW_SCRIPT;
+  if (!fs3.existsSync(script)) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Workflow script not found: ${script}`
+    });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+  const args = [script];
+  if (opts.autoPrompt && opts.autoPrompt.trim()) {
+    args.push(opts.autoPrompt);
+  }
+  if (opts.opusPrompt && opts.opusPrompt.trim()) {
+    args.push("--type-text", opts.opusPrompt);
+  }
+  if (typeof opts.maxSecs === "number" && isFinite(opts.maxSecs)) {
+    args.push("--max-secs", String(opts.maxSecs));
+  }
+  if (typeof opts.enterInterval === "number" && isFinite(opts.enterInterval)) {
+    args.push("--enter-interval", String(opts.enterInterval));
+  }
+  postWorkflow({ type: "workflowState", running: true });
+  const shown = args.map((a) => /\s/.test(a) ? JSON.stringify(a) : a).join(" ");
+  postWorkflow({
+    type: "workflowOutput",
+    stream: "stdout",
+    line: `[jefr] $ ${py} ${shown}`
+  });
+  let proc;
+  try {
+    proc = (0, import_child_process.spawn)(py, args, {
+      cwd: path3.dirname(script),
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" }
+    });
+  } catch (e) {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Failed to start: ${e.message}`
+    });
+    postWorkflow({ type: "workflowState", running: false });
+    postWorkflow({ type: "workflowExit", code: null });
+    return;
+  }
+  workflowProc = proc;
+  const pump = (buf, stream) => {
+    const text = buf.toString();
+    for (const line of text.split(/\r?\n/)) {
+      if (line.length > 0) {
+        postWorkflow({ type: "workflowOutput", stream, line });
+      }
+    }
+  };
+  proc.stdout?.on("data", (d) => pump(d, "stdout"));
+  proc.stderr?.on("data", (d) => pump(d, "stderr"));
+  proc.on("error", (e) => {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stderr",
+      line: `[jefr] Process error: ${e.message}`
+    });
+  });
+  proc.on("close", (code) => {
+    postWorkflow({
+      type: "workflowOutput",
+      stream: "stdout",
+      line: `[jefr] workflow exited with code ${code}`
+    });
+    postWorkflow({ type: "workflowState", running: false });
+    postWorkflow({ type: "workflowExit", code });
+    if (workflowProc === proc) {
+      workflowProc = void 0;
+    }
+  });
+}
+function stopWorkflow() {
+  const proc = workflowProc;
+  if (!proc) {
+    return;
+  }
+  try {
+    if (process.platform === "win32" && proc.pid) {
+      (0, import_child_process.spawnSync)("taskkill", ["/pid", String(proc.pid), "/t", "/f"], {
+        windowsHide: true
+      });
+    } else {
+      proc.kill("SIGTERM");
+    }
+  } catch {
+  }
+}
+var IDLE_TIMEOUT_MS = 15 * 60 * 1e3;
 function resetIdleTimer() {
   lastActivityTime = Date.now();
 }
@@ -1601,6 +1860,7 @@ function deactivate() {
   if (idleTimer) {
     clearInterval(idleTimer);
   }
+  stopWorkflow();
   stopLocalServer();
 }
 function startPolling() {
@@ -1900,6 +2160,20 @@ var MessengerViewProvider = class {
             type: "serverInfo",
             data: { port: getServerPort(), clients: getConnectedClients() }
           });
+          break;
+        case "runWorkflow":
+          runWorkflow({
+            autoPrompt: msg.autoPrompt,
+            opusPrompt: msg.opusPrompt,
+            maxSecs: msg.maxSecs,
+            enterInterval: msg.enterInterval
+          });
+          break;
+        case "stopWorkflow":
+          stopWorkflow();
+          break;
+        case "getWorkflowState":
+          postWorkflow({ type: "workflowState", running: !!workflowProc });
           break;
       }
     });

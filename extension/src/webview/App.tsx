@@ -20,9 +20,12 @@ import { Header } from "./components/Header";
 import { QuestionPanel } from "./components/QuestionPanel";
 import { ChatTab } from "./components/ChatTab";
 import { QueueTab } from "./components/QueueTab";
-import { UsageTab } from "./components/UsageTab";
+import { GeneralTab, type WorkflowLine } from "./components/GeneralTab";
 
-type TabId = "chat" | "queue" | "usage";
+type TabId = "chat" | "queue" | "general";
+
+/** Keep the workflow log bounded so it never grows without limit. */
+const MAX_WORKFLOW_LINES = 600;
 
 /** Persisted webview state shape (survives reloads via getState/setState). */
 interface PersistedState {
@@ -55,6 +58,9 @@ export function App(): JSX.Element {
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [tokenInjected, setTokenInjected] = useState(false);
+
+  const [workflowRunning, setWorkflowRunning] = useState(false);
+  const [workflowOutput, setWorkflowOutput] = useState<WorkflowLine[]>([]);
 
   /* Route messages coming from the extension host. */
   useEffect(() => {
@@ -116,6 +122,20 @@ export function App(): JSX.Element {
           setUsage(msg.data);
           setUsageLoading(false);
           break;
+        case "workflowState":
+          setWorkflowRunning(msg.running);
+          break;
+        case "workflowOutput":
+          setWorkflowOutput((lines) => {
+            const next = [...lines, { stream: msg.stream, line: msg.line }];
+            return next.length > MAX_WORKFLOW_LINES
+              ? next.slice(next.length - MAX_WORKFLOW_LINES)
+              : next;
+          });
+          break;
+        case "workflowExit":
+          setWorkflowRunning(false);
+          break;
         // cardState / cardActivated / cardError / serverInfo are accepted but
         // the local build keeps licensing disabled (checkCard() === true).
         default:
@@ -141,7 +161,10 @@ export function App(): JSX.Element {
   const switchTab = useCallback((next: TabId) => {
     setTab(next);
     if (next === "queue") post({ type: "getQueue" });
-    if (next === "usage") post({ type: "fetchUsage" });
+    if (next === "general") {
+      post({ type: "fetchUsage" });
+      post({ type: "getWorkflowState" });
+    }
   }, []);
 
   /* Optimistically record a message the user just sent into the history,
@@ -168,7 +191,7 @@ export function App(): JSX.Element {
           label="Queue"
           badge={queueCount}
         />
-        <TabButton id="usage" current={tab} onClick={switchTab} label="Usage" />
+        <TabButton id="general" current={tab} onClick={switchTab} label="General" />
       </div>
 
       {tab === "chat" && (
@@ -181,8 +204,15 @@ export function App(): JSX.Element {
         />
       )}
       {tab === "queue" && <QueueTab queue={queue} />}
-      {tab === "usage" && (
-        <UsageTab usage={usage} loading={usageLoading} tokenInjected={tokenInjected} />
+      {tab === "general" && (
+        <GeneralTab
+          usage={usage}
+          loading={usageLoading}
+          tokenInjected={tokenInjected}
+          workflowRunning={workflowRunning}
+          workflowOutput={workflowOutput}
+          onClearWorkflowOutput={() => setWorkflowOutput([])}
+        />
       )}
     </div>
   );

@@ -30,6 +30,8 @@ const QUEUE_FILE = path.join(DATA_DIR, "queue.json"); // extension -> server: pe
 const QUESTION_FILE = path.join(DATA_DIR, "question.json"); // server -> extension: open question
 const ANSWER_FILE = path.join(DATA_DIR, "answer.json"); // extension -> server: the user's answer
 const REPLY_FILE = path.join(DATA_DIR, "reply.json"); // server -> extension: reply/progress summary
+const HEARTBEAT_FILE = path.join(DATA_DIR, "agent-alive.json"); // server -> extension: agent liveness
+const QUEUE_LOCK_DIR = path.join(DATA_DIR, "queue.lock"); // cross-process queue mutex
 const LOG_FILE = path.join(DATA_DIR, "server.log");
 
 /** How often the blocking tools re-check the disk, in ms. */
@@ -75,6 +77,29 @@ async function ensureDataDir(): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
 }
 
+/**
+ * Touch the agent-liveness file so the extension (and front-ends like the
+ * Obsidian plugin) can tell that a Cursor agent is *actually* running the
+ * perpetual loop — as opposed to the WebSocket merely being open. Without this,
+ * an "online" indicator only proves the extension is reachable, not that anyone
+ * is draining the message queue.
+ *
+ * `state` is "waiting" while a tool is blocked listening for input
+ * (`check_messages` / `ask_question`) or "working" while a task is mid-flight
+ * (`send_progress`). Best-effort: liveness must never throw.
+ */
+async function touchAgentAlive(state: "waiting" | "working"): Promise<void> {
+  try {
+    await fs.writeFile(
+      HEARTBEAT_FILE,
+      JSON.stringify({ ts: Date.now(), pid: process.pid, state }),
+      "utf-8",
+    );
+  } catch {
+    // ignore — liveness is advisory only
+  }
+}
+
 async function readQueue(): Promise<QueueMessage[]> {
   try {
     const raw = await fs.readFile(QUEUE_FILE, "utf-8");
@@ -85,8 +110,84 @@ async function readQueue(): Promise<QueueMessage[]> {
   }
 }
 
-async function clearQueue(): Promise<void> {
-  await fs.writeFile(QUEUE_FILE, "[]", "utf-8");
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Acquire the cross-process queue lock (mkdir is atomic). Returns false if it
+ *  could not be taken in time; a lock older than 5s is reclaimed as stale. */
+async function acquireQueueLock(timeoutMs = 2000): Promise<boolean> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      await fs.mkdir(QUEUE_LOCK_DIR);
+      return true;
+    } catch {
+      try {
+        const st = await fs.stat(QUEUE_LOCK_DIR);
+        if (Date.now() - st.mtimeMs > 5000) {
+          await fs.rmdir(QUEUE_LOCK_DIR).catch(() => {});
+          continue;
+        }
+      } catch {
+        continue; // lock vanished mid-check; retry
+      }
+      if (Date.now() - start > timeoutMs) {
+        return false;
+      }
+      await delay(8);
+    }
+  }
+}
+
+async function releaseQueueLock(): Promise<void> {
+  await fs.rmdir(QUEUE_LOCK_DIR).catch(() => {});
+}
+
+/** Write `data` directly, retrying briefly on transient Windows file locks.
+ *  (Temp+rename is avoided: on Windows rename-over-existing throws EPERM when a
+ *  reader has the file open. The lock serializes writers and readers tolerate a
+ *  transient partial, so a direct retrying write is the robust choice.) */
+async function robustWriteFile(file: string, data: string): Promise<void> {
+  let lastErr: unknown;
+  for (let i = 0; i < 10; i++) {
+    try {
+      await fs.writeFile(file, data, "utf-8");
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw e;
+      }
+      await delay(15);
+    }
+  }
+  if (lastErr) {
+    throw lastErr;
+  }
+}
+
+/**
+ * Atomically take ALL pending messages and clear the queue under the shared
+ * lock, so a concurrent send from the extension can't be lost between our read
+ * and clear. A lock-free peek avoids lock churn on the common empty case.
+ */
+async function drainQueue(): Promise<QueueMessage[]> {
+  const peek = await readQueue();
+  if (peek.length === 0) {
+    return [];
+  }
+  const locked = await acquireQueueLock();
+  try {
+    const queue = await readQueue();
+    if (queue.length > 0) {
+      await robustWriteFile(QUEUE_FILE, "[]");
+    }
+    return queue;
+  } finally {
+    if (locked) {
+      await releaseQueueLock();
+    }
+  }
 }
 
 /** Resolves true after `ms`, or false immediately if the signal aborts. */
@@ -288,7 +389,13 @@ server.tool(
     let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
 
     while (!extra.signal.aborted) {
-      const queue = await readQueue();
+      // Refresh agent liveness on every poll so the badge can show that a real
+      // agent is actively listening (not just that the socket is open).
+      await touchAgentAlive("waiting");
+
+      // Atomically take + clear pending messages under the shared lock so a
+      // concurrent send can't be lost between the read and the clear.
+      const queue = await drainQueue();
       if (queue.length > 0) {
         const results: ContentPart[] = [];
         for (const msg of queue) {
@@ -296,7 +403,6 @@ server.tool(
           if (Array.isArray(processed)) results.push(...processed);
           else results.push(processed);
         }
-        await clearQueue();
 
         // Append the loop-reminder suffix to the last text part.
         const last = results[results.length - 1];
@@ -364,6 +470,9 @@ server.tool(
   },
   async ({ progress, percent }) => {
     await ensureDataDir();
+    // The agent is alive and mid-task (not blocked listening) when it reports
+    // progress, so mark liveness as "working".
+    await touchAgentAlive("working");
     const payload: Record<string, unknown> = {
       content: progress,
       timestamp: new Date().toISOString(),
@@ -435,6 +544,9 @@ server.tool(
     let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
 
     while (!extra.signal.aborted) {
+      // Keep liveness fresh while blocked waiting for the user's answer.
+      await touchAgentAlive("waiting");
+
       try {
         const raw = await fs.readFile(ANSWER_FILE, "utf-8");
         const answerData = JSON.parse(raw);

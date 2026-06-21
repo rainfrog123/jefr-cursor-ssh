@@ -18,6 +18,7 @@ import {
   writeAnswer,
   cancelQuestion,
   clearReply,
+  getAgentStatus,
 } from "./messenger";
 
 /** Decode a `data:` URL into a temp file and queue it as an image message.
@@ -169,6 +170,7 @@ function handleHttp(req: IncomingMessage, res: ServerResponse): void {
         hasReply: !!reply,
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
+        agent: getAgentStatus(),
         port: serverPort,
       })
     );
@@ -400,6 +402,7 @@ function buildPushState() {
     history: readSharedHistory(),
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
+    agent: getAgentStatus(),
     port: serverPort,
   };
 }
@@ -565,6 +568,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
 
 	<div class="stat-row">
 		<div class="stat-card"><div id="statConn" class="stat-val off">-</div><div class="stat-label">Connection</div></div>
+		<div class="stat-card"><div id="statAgent" class="stat-val off">-</div><div class="stat-label">Agent</div></div>
 		<div class="stat-card"><div id="statQueue" class="stat-val num">0</div><div class="stat-label">Queue</div></div>
 		<div class="stat-card"><div id="statWs" class="stat-val num">0</div><div class="stat-label">Clients</div></div>
 	</div>
@@ -822,6 +826,10 @@ function renderMessages(history){
 }
 function updateDashboard(d){
 	$('statConn').textContent=d.cardActive?'Online':'Offline';$('statConn').className='stat-val '+(d.cardActive?'on':'off');
+	var ag=d.agent||{alive:false,state:'idle'};
+	var agText=ag.alive?(ag.state==='working'?'Busy':'Listening'):'None';
+	$('statAgent').textContent=agText;
+	$('statAgent').className='stat-val '+(ag.alive?(ag.state==='working'?'num':'on'):'off');
 	$('statQueue').textContent=d.queueCount||0;
 	$('statWs').textContent=d.wsClients||0;
 	if(d.workspace){$('wsName').textContent=d.workspace.name||'-';$('wsPath').textContent=d.workspace.path||'-'}

@@ -194,6 +194,12 @@ class JefrView extends ItemView {
     const brand = header.createDiv({ cls: "jefr-brand" });
     brand.createSpan({ cls: "jefr-logo", text: "jefr" });
     this.statusPill = brand.createSpan({ cls: "jefr-status jefr-status-offline", text: "Offline" });
+    // Distinct from the connection pill: this reflects whether a Cursor agent is
+    // actually running the perpetual loop (heartbeat), not just that the socket
+    // is open. "Listening" = will pick up your message now; "Busy" = mid-task,
+    // messages queue; "No agent" = nothing is draining the queue.
+    this.agentPill = brand.createSpan({ cls: "jefr-agent jefr-agent-idle", text: "No agent" });
+    this.agentPill.setAttr("title", "Whether a Cursor agent is actively listening");
 
     const headerRight = header.createDiv({ cls: "jefr-header-right" });
     this.queueBadge = headerRight.createSpan({ cls: "jefr-queue-badge", text: "" });
@@ -373,7 +379,18 @@ class JefrView extends ItemView {
     const online = this.connStatus === "online";
     if (this.sendBtn) this.sendBtn.disabled = (!hasText && !hasAttach) || !online;
     if (this.hint) {
-      this.hint.setText(online ? "Enter to send" : "Offline — waiting for Cursor…");
+      const agent = this.agentStatus;
+      let hint;
+      if (!online) {
+        hint = "Offline — waiting for Cursor…";
+      } else if (agent && agent.alive && agent.state === "working") {
+        hint = "Agent busy — message will queue";
+      } else if (agent && agent.alive) {
+        hint = "Enter to send";
+      } else {
+        hint = "No agent listening — message will queue";
+      }
+      this.hint.setText(hint);
     }
   }
 
@@ -556,6 +573,29 @@ class JefrView extends ItemView {
     } else {
       this.statusPill.addClass("jefr-status-offline");
       this.statusPill.setText("Offline");
+    }
+    // When the socket is down we have no idea about the agent, so show "unknown".
+    if (status !== "online") this.setAgentStatus(null);
+    this.updateSendState();
+  }
+
+  setAgentStatus(agent) {
+    this.agentStatus = agent || null;
+    if (!this.agentPill) return;
+    this.agentPill.removeClass("jefr-agent-ready", "jefr-agent-busy", "jefr-agent-idle");
+    const alive = !!(agent && agent.alive);
+    if (alive && agent.state === "working") {
+      this.agentPill.addClass("jefr-agent-busy");
+      this.agentPill.setText("Agent busy");
+      this.agentPill.setAttr("title", "An agent is alive but mid-task — messages will queue until it listens again");
+    } else if (alive) {
+      this.agentPill.addClass("jefr-agent-ready");
+      this.agentPill.setText("Agent listening");
+      this.agentPill.setAttr("title", "An agent is actively waiting — your message is picked up immediately");
+    } else {
+      this.agentPill.addClass("jefr-agent-idle");
+      this.agentPill.setText("No agent");
+      this.agentPill.setAttr("title", "No agent is running the loop — messages queue until one calls check_messages");
     }
     this.updateSendState();
   }
@@ -766,6 +806,9 @@ class JefrView extends ItemView {
   /* ----------------------- Inbound state ------------------------- */
 
   handleState(d) {
+    // Real agent liveness (heartbeat), independent of the socket connection.
+    this.setAgentStatus(d.agent);
+
     // Connection / workspace
     if (d.workspace) {
       const name = d.workspace.name || "";

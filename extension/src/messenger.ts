@@ -115,6 +115,8 @@ let REPLY_FILE = path.join(dataDir, "reply.json");
 let CARD_FILE = path.join(dataDir, "card.json");
 let INJECTED_TOKEN_FILE = path.join(dataDir, "injected-token.json");
 let HISTORY_FILE = path.join(dataDir, "history.json");
+let HEARTBEAT_FILE = path.join(dataDir, "agent-alive.json");
+let QUEUE_LOCK_DIR = path.join(dataDir, "queue.lock");
 
 const RULES_FILE_NAME = "mcp-messenger.mdc";
 const LEGACY_RULES_FILE_NAME = "system.mdc";
@@ -128,6 +130,141 @@ export function setDataDir(dir: string): void {
   CARD_FILE = path.join(dir, "card.json");
   INJECTED_TOKEN_FILE = path.join(dir, "injected-token.json");
   HISTORY_FILE = path.join(dir, "history.json");
+  HEARTBEAT_FILE = path.join(dir, "agent-alive.json");
+  QUEUE_LOCK_DIR = path.join(dir, "queue.lock");
+}
+
+// ── Cross-process queue lock + atomic writes ────────────────────────────────
+// queue.json is read-modify-written by BOTH this extension (on send) and the
+// separate MCP server process (on drain). Without coordination, a send landing
+// between the MCP's read and its clear is silently lost. We guard every
+// queue mutation with a directory-based lock (mkdir is atomic across processes).
+// Writes are direct (not temp+rename): on Windows rename-over-existing throws
+// EPERM when a reader has the file open, and since the lock already serializes
+// writers and readers tolerate a transient partial (they fall back to []), a
+// direct write with a short retry is the robust choice.
+
+/** Synchronous sleep (no busy-spin) used while waiting for the queue lock. */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback busy-wait */
+    }
+  }
+}
+
+/** Acquire the queue lock, returning false if it could not be taken in time.
+ *  A lock older than 5s is treated as stale (crashed holder) and reclaimed. */
+function acquireQueueLock(timeoutMs = 2000): boolean {
+  const start = Date.now();
+  for (;;) {
+    try {
+      fs.mkdirSync(QUEUE_LOCK_DIR);
+      return true;
+    } catch {
+      try {
+        const st = fs.statSync(QUEUE_LOCK_DIR);
+        if (Date.now() - st.mtimeMs > 5000) {
+          try {
+            fs.rmdirSync(QUEUE_LOCK_DIR);
+          } catch {
+            // someone else reclaimed it; retry
+          }
+          continue;
+        }
+      } catch {
+        // lock vanished between mkdir and stat; retry immediately
+        continue;
+      }
+      if (Date.now() - start > timeoutMs) {
+        return false; // give up but let the caller proceed (best-effort)
+      }
+      sleepSync(8);
+    }
+  }
+}
+
+function releaseQueueLock(): void {
+  try {
+    fs.rmdirSync(QUEUE_LOCK_DIR);
+  } catch {
+    // already released
+  }
+}
+
+/** Run `fn` while holding the queue lock (best-effort). */
+function withQueueLock<T>(fn: () => T): T {
+  ensureDir();
+  const locked = acquireQueueLock();
+  try {
+    return fn();
+  } finally {
+    if (locked) {
+      releaseQueueLock();
+    }
+  }
+}
+
+/** Write `data` directly, retrying briefly on transient Windows file locks
+ *  (EPERM/EBUSY/EACCES from antivirus, indexers, or concurrent readers). */
+function robustWriteFile(file: string, data: string): void {
+  let lastErr: unknown;
+  for (let i = 0; i < 10; i++) {
+    try {
+      fs.writeFileSync(file, data, "utf-8");
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw e;
+      }
+      sleepSync(15);
+    }
+  }
+  if (lastErr) {
+    throw lastErr;
+  }
+}
+
+// ── Agent liveness ──────────────────────────────────────────────────────────
+
+export type AgentLivenessState = "waiting" | "working" | "idle";
+
+export interface AgentStatus {
+  /** True when a Cursor agent refreshed the heartbeat within the stale window. */
+  alive: boolean;
+  /** "waiting" = blocked in check_messages/ask_question listening for input;
+   *  "working" = mid-task (send_progress); "idle" = no fresh heartbeat. */
+  state: AgentLivenessState;
+}
+
+/** How long after the last agent heartbeat we still consider it alive. The MCP
+ *  server refreshes the file roughly every 100ms while blocked, so a few
+ *  seconds of grace comfortably survives brief stalls without lying for long. */
+const AGENT_STALE_MS = 6000;
+
+/** Read the agent heartbeat written by the MCP server and decide whether a
+ *  real agent is currently running the perpetual loop. This is the signal the
+ *  WebSocket connection state cannot provide. */
+export function getAgentStatus(): AgentStatus {
+  try {
+    if (!fs.existsSync(HEARTBEAT_FILE)) {
+      return { alive: false, state: "idle" };
+    }
+    const data = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, "utf-8"));
+    const ts = typeof data.ts === "number" ? data.ts : 0;
+    if (Date.now() - ts >= AGENT_STALE_MS) {
+      return { alive: false, state: "idle" };
+    }
+    const state: AgentLivenessState = data.state === "working" ? "working" : "waiting";
+    return { alive: true, state };
+  } catch {
+    return { alive: false, state: "idle" };
+  }
 }
 
 // ── Shared chat history (sends from any front-end; rendered by all) ──────────
@@ -211,7 +348,7 @@ export function readQueue(): QueueItem[] {
 
 export function writeQueue(items: QueueItem[]): void {
   ensureDir();
-  fs.writeFileSync(QUEUE_FILE, JSON.stringify(items, null, 2), "utf-8");
+  robustWriteFile(QUEUE_FILE, JSON.stringify(items, null, 2));
 }
 
 export function formatHistoryTime(date: Date = new Date()): string {
@@ -237,9 +374,11 @@ export function sendText(text: string): QueueItem {
     content: text,
     timestamp: new Date().toISOString(),
   };
-  const queue = readQueue();
-  queue.push(item);
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push(item);
+    writeQueue(queue);
+  });
   appendSharedHistory({ id: item.id, kind: "text", text, timestamp: item.timestamp });
   return item;
 }
@@ -252,21 +391,25 @@ export function sendImage(filePath: string, caption?: string): QueueItem {
     caption,
     timestamp: new Date().toISOString(),
   };
-  const queue = readQueue();
-  queue.push(item);
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push(item);
+    writeQueue(queue);
+  });
   return item;
 }
 
 export function sendFile(filePath: string): void {
-  const queue = readQueue();
-  queue.push({
-    id: makeId(),
-    type: "file",
-    path: filePath,
-    timestamp: new Date().toISOString(),
+  withQueueLock(() => {
+    const queue = readQueue();
+    queue.push({
+      id: makeId(),
+      type: "file",
+      path: filePath,
+      timestamp: new Date().toISOString(),
+    });
+    writeQueue(queue);
   });
-  writeQueue(queue);
 }
 
 export function getQueueCount(): number {
@@ -274,24 +417,28 @@ export function getQueueCount(): number {
 }
 
 export function deleteQueueItem(id: string): void {
-  const queue = readQueue();
-  writeQueue(queue.filter((item) => item.id !== id));
+  withQueueLock(() => {
+    const queue = readQueue();
+    writeQueue(queue.filter((item) => item.id !== id));
+  });
 }
 
 export function clearQueue(): void {
-  writeQueue([]);
+  withQueueLock(() => writeQueue([]));
 }
 
 export function updateQueueItem(id: string, updates: { content?: string }): void {
-  const queue = readQueue();
-  const idx = queue.findIndex((item) => item.id === id);
-  if (idx === -1) {
-    return;
-  }
-  if (updates.content !== undefined && queue[idx].type === "text") {
-    queue[idx].content = updates.content;
-  }
-  writeQueue(queue);
+  withQueueLock(() => {
+    const queue = readQueue();
+    const idx = queue.findIndex((item) => item.id === id);
+    if (idx === -1) {
+      return;
+    }
+    if (updates.content !== undefined && queue[idx].type === "text") {
+      queue[idx].content = updates.content;
+    }
+    writeQueue(queue);
+  });
 }
 
 // ── Questions / answers ─────────────────────────────────────────────────────

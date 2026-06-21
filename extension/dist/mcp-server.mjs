@@ -30966,6 +30966,8 @@ var QUEUE_FILE = path.join(DATA_DIR, "queue.json");
 var QUESTION_FILE = path.join(DATA_DIR, "question.json");
 var ANSWER_FILE = path.join(DATA_DIR, "answer.json");
 var REPLY_FILE = path.join(DATA_DIR, "reply.json");
+var HEARTBEAT_FILE = path.join(DATA_DIR, "agent-alive.json");
+var QUEUE_LOCK_DIR = path.join(DATA_DIR, "queue.lock");
 var LOG_FILE = path.join(DATA_DIR, "server.log");
 var POLL_INTERVAL = 100;
 var HEARTBEAT_INTERVAL = Number(process.env.MESSENGER_HEARTBEAT_INTERVAL_MS) || 8e3;
@@ -30973,6 +30975,16 @@ var MAX_WAIT_MS = Number(process.env.MESSENGER_MAX_WAIT_MS) || 12e4;
 var SYSTEM_SUFFIX = "\n\n---\n[system] The message above was sent by the user via the plugin. After replying, call the jefr MCP check_messages tool to keep listening for new messages.";
 async function ensureDataDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
+}
+async function touchAgentAlive(state) {
+  try {
+    await fs.writeFile(
+      HEARTBEAT_FILE,
+      JSON.stringify({ ts: Date.now(), pid: process.pid, state }),
+      "utf-8"
+    );
+  } catch {
+  }
 }
 async function readQueue() {
   try {
@@ -30983,8 +30995,71 @@ async function readQueue() {
     return [];
   }
 }
-async function clearQueue() {
-  await fs.writeFile(QUEUE_FILE, "[]", "utf-8");
+var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+async function acquireQueueLock(timeoutMs = 2e3) {
+  const start = Date.now();
+  for (; ; ) {
+    try {
+      await fs.mkdir(QUEUE_LOCK_DIR);
+      return true;
+    } catch {
+      try {
+        const st = await fs.stat(QUEUE_LOCK_DIR);
+        if (Date.now() - st.mtimeMs > 5e3) {
+          await fs.rmdir(QUEUE_LOCK_DIR).catch(() => {
+          });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - start > timeoutMs) {
+        return false;
+      }
+      await delay(8);
+    }
+  }
+}
+async function releaseQueueLock() {
+  await fs.rmdir(QUEUE_LOCK_DIR).catch(() => {
+  });
+}
+async function robustWriteFile(file2, data) {
+  let lastErr;
+  for (let i = 0; i < 10; i++) {
+    try {
+      await fs.writeFile(file2, data, "utf-8");
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = e?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        throw e;
+      }
+      await delay(15);
+    }
+  }
+  if (lastErr) {
+    throw lastErr;
+  }
+}
+async function drainQueue() {
+  const peek = await readQueue();
+  if (peek.length === 0) {
+    return [];
+  }
+  const locked = await acquireQueueLock();
+  try {
+    const queue = await readQueue();
+    if (queue.length > 0) {
+      await robustWriteFile(QUEUE_FILE, "[]");
+    }
+    return queue;
+  } finally {
+    if (locked) {
+      await releaseQueueLock();
+    }
+  }
 }
 function sleepWithAbort(signal, ms) {
   if (signal.aborted)
@@ -31176,7 +31251,8 @@ server.tool(
     const waitStart = Date.now();
     let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
     while (!extra.signal.aborted) {
-      const queue = await readQueue();
+      await touchAgentAlive("waiting");
+      const queue = await drainQueue();
       if (queue.length > 0) {
         const results = [];
         for (const msg of queue) {
@@ -31186,7 +31262,6 @@ server.tool(
           else
             results.push(processed);
         }
-        await clearQueue();
         const last = results[results.length - 1];
         if (results.length > 0 && last.type === "text") {
           last.text += SYSTEM_SUFFIX;
@@ -31236,6 +31311,7 @@ server.tool(
   },
   async ({ progress, percent }) => {
     await ensureDataDir();
+    await touchAgentAlive("working");
     const payload = {
       content: progress,
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
@@ -31293,6 +31369,7 @@ server.tool(
     const waitStart = Date.now();
     let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
     while (!extra.signal.aborted) {
+      await touchAgentAlive("waiting");
       try {
         const raw = await fs.readFile(ANSWER_FILE, "utf-8");
         const answerData = JSON.parse(raw);
