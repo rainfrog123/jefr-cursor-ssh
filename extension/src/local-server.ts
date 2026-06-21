@@ -19,6 +19,8 @@ import {
   cancelQuestion,
   clearReply,
   getAgentStatus,
+  deleteQueueItem,
+  clearQueue,
 } from "./messenger";
 
 /** Decode a `data:` URL into a temp file and queue it as an image message.
@@ -253,21 +255,45 @@ function handleUpgrade(req: IncomingMessage, socket: Socket): void {
   socket.on("error", () => removeClient(client));
 }
 
+// Recently-seen client message ids, so a resend (after a missed ack) is
+// idempotent and never enqueues the same message twice.
+const recentCids = new Set<string>();
+const recentCidOrder: string[] = [];
+function seenCid(cid: unknown): boolean {
+  if (typeof cid !== "string" || !cid) return false;
+  if (recentCids.has(cid)) return true;
+  recentCids.add(cid);
+  recentCidOrder.push(cid);
+  if (recentCidOrder.length > 500) {
+    const old = recentCidOrder.shift();
+    if (old) recentCids.delete(old);
+  }
+  return false;
+}
+
 function handleWsMessage(client: WsClient, raw: string): void {
   try {
     const msg = JSON.parse(raw);
     switch (msg.type) {
       case "sendText":
         if (msg.text) {
-          pushHistoryItem(sendText(msg.text));
+          // De-dupe resends by client id; always ack so the client stops resending.
+          if (!seenCid(msg.cid)) {
+            pushHistoryItem(sendText(msg.text));
+          }
+          if (msg.cid) wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
           broadcastWs({ type: "queueUpdate", count: getQueueCount() });
           broadcastStateNow();
         }
         break;
       case "sendImage":
-        if (msg.dataUrl && handlePastedImage(msg.dataUrl, msg.caption)) {
-          broadcastWs({ type: "queueUpdate", count: getQueueCount() });
-          broadcastStateNow();
+        if (msg.dataUrl) {
+          const fresh = !seenCid(msg.cid);
+          if (!fresh || handlePastedImage(msg.dataUrl, msg.caption)) {
+            if (msg.cid) wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
+            broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+            broadcastStateNow();
+          }
         }
         break;
       case "submitAnswer":
@@ -280,6 +306,18 @@ function handleWsMessage(client: WsClient, raw: string): void {
         break;
       case "ackReply":
         clearReply();
+        break;
+      case "deleteQueueItem":
+        if (msg.id) {
+          deleteQueueItem(msg.id);
+          broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+          broadcastStateNow();
+        }
+        break;
+      case "clearQueue":
+        clearQueue();
+        broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+        broadcastStateNow();
         break;
       case "ping":
         wsSend(client.socket, JSON.stringify({ type: "pong" }));

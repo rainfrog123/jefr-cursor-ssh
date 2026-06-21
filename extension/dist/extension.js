@@ -963,21 +963,46 @@ Sec-WebSocket-Accept: ${accept}\r
   socket.on("close", () => removeClient(client));
   socket.on("error", () => removeClient(client));
 }
+var recentCids = /* @__PURE__ */ new Set();
+var recentCidOrder = [];
+function seenCid(cid) {
+  if (typeof cid !== "string" || !cid)
+    return false;
+  if (recentCids.has(cid))
+    return true;
+  recentCids.add(cid);
+  recentCidOrder.push(cid);
+  if (recentCidOrder.length > 500) {
+    const old = recentCidOrder.shift();
+    if (old)
+      recentCids.delete(old);
+  }
+  return false;
+}
 function handleWsMessage(client, raw) {
   try {
     const msg = JSON.parse(raw);
     switch (msg.type) {
       case "sendText":
         if (msg.text) {
-          pushHistoryItem(sendText(msg.text));
+          if (!seenCid(msg.cid)) {
+            pushHistoryItem(sendText(msg.text));
+          }
+          if (msg.cid)
+            wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
           broadcastWs({ type: "queueUpdate", count: getQueueCount() });
           broadcastStateNow();
         }
         break;
       case "sendImage":
-        if (msg.dataUrl && handlePastedImage(msg.dataUrl, msg.caption)) {
-          broadcastWs({ type: "queueUpdate", count: getQueueCount() });
-          broadcastStateNow();
+        if (msg.dataUrl) {
+          const fresh = !seenCid(msg.cid);
+          if (!fresh || handlePastedImage(msg.dataUrl, msg.caption)) {
+            if (msg.cid)
+              wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
+            broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+            broadcastStateNow();
+          }
         }
         break;
       case "submitAnswer":
@@ -990,6 +1015,18 @@ function handleWsMessage(client, raw) {
         break;
       case "ackReply":
         clearReply();
+        break;
+      case "deleteQueueItem":
+        if (msg.id) {
+          deleteQueueItem(msg.id);
+          broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+          broadcastStateNow();
+        }
+        break;
+      case "clearQueue":
+        clearQueue();
+        broadcastWs({ type: "queueUpdate", count: getQueueCount() });
+        broadcastStateNow();
         break;
       case "ping":
         wsSend(client.socket, JSON.stringify({ type: "pong" }));

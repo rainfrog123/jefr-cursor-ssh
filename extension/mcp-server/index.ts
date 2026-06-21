@@ -100,6 +100,28 @@ async function touchAgentAlive(state: "waiting" | "working"): Promise<void> {
   }
 }
 
+// ── Background liveness ticker ──────────────────────────────────────────────
+// The agent only calls MCP tools at turn boundaries; between those calls (while
+// it edits files / runs commands) nothing would refresh the heartbeat, so the
+// badge wrongly read "no agent" mid-work. This ticker keeps the heartbeat warm:
+//   - "waiting" while a check_messages/ask_question call is blocked (truly
+//     listening — a send is picked up immediately), else
+//   - "working" for a window after the last agent interaction (actively busy),
+//     else nothing (let it go stale -> genuinely no agent).
+let activeWaits = 0;
+let lastInteractionTs = Date.now();
+const BUSY_WINDOW_MS = Number(process.env.MESSENGER_BUSY_WINDOW_MS) || 180_000;
+
+const livenessTicker = setInterval(() => {
+  if (activeWaits > 0) {
+    void touchAgentAlive("waiting");
+  } else if (Date.now() - lastInteractionTs < BUSY_WINDOW_MS) {
+    void touchAgentAlive("working");
+  }
+}, 2500);
+// Don't let the ticker alone keep the process alive.
+livenessTicker.unref?.();
+
 async function readQueue(): Promise<QueueMessage[]> {
   try {
     const raw = await fs.readFile(QUEUE_FILE, "utf-8");
@@ -385,68 +407,76 @@ server.tool(
     }
 
     // 2) Block, polling the queue, until a message arrives (or we time out).
-    const waitStart = Date.now();
-    let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+    // Mark this call as actively listening; the background ticker reports
+    // "waiting" while activeWaits > 0 (an immediate touch flips the badge now).
+    activeWaits++;
+    await touchAgentAlive("waiting");
+    try {
+      const waitStart = Date.now();
+      let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
 
-    while (!extra.signal.aborted) {
-      // Refresh agent liveness on every poll so the badge can show that a real
-      // agent is actively listening (not just that the socket is open).
-      await touchAgentAlive("waiting");
+      while (!extra.signal.aborted) {
+        // Atomically take + clear pending messages under the shared lock so a
+        // concurrent send can't be lost between the read and the clear.
+        const queue = await drainQueue();
+        if (queue.length > 0) {
+          const results: ContentPart[] = [];
+          for (const msg of queue) {
+            const processed = await processMessage(msg);
+            if (Array.isArray(processed)) results.push(...processed);
+            else results.push(processed);
+          }
 
-      // Atomically take + clear pending messages under the shared lock so a
-      // concurrent send can't be lost between the read and the clear.
-      const queue = await drainQueue();
-      if (queue.length > 0) {
-        const results: ContentPart[] = [];
-        for (const msg of queue) {
-          const processed = await processMessage(msg);
-          if (Array.isArray(processed)) results.push(...processed);
-          else results.push(processed);
+          // Append the loop-reminder suffix to the last text part.
+          const last = results[results.length - 1];
+          if (results.length > 0 && last.type === "text") {
+            last.text += SYSTEM_SUFFIX;
+          } else {
+            results.push({ type: "text", text: SYSTEM_SUFFIX });
+          }
+
+          await appendServerLog("info", `check_messages delivered ${queue.length} queued item(s)`);
+          // The agent just received input and is about to work -> mark busy.
+          lastInteractionTs = Date.now();
+          return { content: results };
         }
 
-        // Append the loop-reminder suffix to the last text part.
-        const last = results[results.length - 1];
-        if (results.length > 0 && last.type === "text") {
-          last.text += SYSTEM_SUFFIX;
-        } else {
-          results.push({ type: "text", text: SYSTEM_SUFFIX });
+        if (Date.now() - waitStart >= MAX_WAIT_MS) {
+          await appendServerLog("info", `check_messages timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: "[system] No new messages. Do not show this to the user; call check_messages again immediately to keep listening.",
+              },
+            ],
+          };
         }
 
-        await appendServerLog("info", `check_messages delivered ${queue.length} queued item(s)`);
-        return { content: results };
+        if (Date.now() >= nextHeartbeatAt) {
+          await emitHeartbeat(extra, "jefr is still waiting for the next user message.");
+          nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+        }
+
+        const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
+        if (!keepWaiting) break;
       }
 
-      if (Date.now() - waitStart >= MAX_WAIT_MS) {
-        await appendServerLog("info", `check_messages timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: "[system] No new messages. Do not show this to the user; call check_messages again immediately to keep listening.",
-            },
-          ],
-        };
-      }
-
-      if (Date.now() >= nextHeartbeatAt) {
-        await emitHeartbeat(extra, "jefr is still waiting for the next user message.");
-        nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
-      }
-
-      const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
-      if (!keepWaiting) break;
+      await appendServerLog("warn", "check_messages was cancelled by the client while waiting");
+      return {
+        content: [
+          {
+            type: "text",
+            text: "[system] check_messages wait was interrupted by the client. If the session should continue, do not show this internal note to the user; call check_messages again.",
+          },
+        ],
+        isError: true,
+      };
+    } finally {
+      activeWaits--;
+      // Leaving the wait means the agent is back to working (until it returns).
+      lastInteractionTs = Date.now();
     }
-
-    await appendServerLog("warn", "check_messages was cancelled by the client while waiting");
-    return {
-      content: [
-        {
-          type: "text",
-          text: "[system] check_messages wait was interrupted by the client. If the session should continue, do not show this internal note to the user; call check_messages again.",
-        },
-      ],
-      isError: true,
-    };
   },
 );
 
@@ -471,7 +501,8 @@ server.tool(
   async ({ progress, percent }) => {
     await ensureDataDir();
     // The agent is alive and mid-task (not blocked listening) when it reports
-    // progress, so mark liveness as "working".
+    // progress, so mark liveness as "working" and refresh the busy window.
+    lastInteractionTs = Date.now();
     await touchAgentAlive("working");
     const payload: Record<string, unknown> = {
       content: progress,
@@ -540,13 +571,14 @@ server.tool(
     }
 
     // 2) Block, polling for the answer file (or time out).
+    // Count as actively listening so the badge reads "waiting" while blocked.
+    activeWaits++;
+    await touchAgentAlive("waiting");
+    try {
     const waitStart = Date.now();
     let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
 
     while (!extra.signal.aborted) {
-      // Keep liveness fresh while blocked waiting for the user's answer.
-      await touchAgentAlive("waiting");
-
       try {
         const raw = await fs.readFile(ANSWER_FILE, "utf-8");
         const answerData = JSON.parse(raw);
@@ -579,6 +611,7 @@ server.tool(
         }
         const finalText = parts.length > 0 ? parts.join("\n\n") : "(No answer)";
         await appendServerLog("info", "ask_question received user answer");
+        lastInteractionTs = Date.now();
         return { content: [{ type: "text", text: finalText }] };
       } catch {
         // answer not ready yet
@@ -615,6 +648,10 @@ server.tool(
       ],
       isError: true,
     };
+    } finally {
+      activeWaits--;
+      lastInteractionTs = Date.now();
+    }
   },
 );
 

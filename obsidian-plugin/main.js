@@ -258,6 +258,22 @@ class JefrView extends ItemView {
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         this.doSend();
+      } else if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // Shell-style history recall: Up brings back the previous sent message.
+        // Only hijacks Up when the caret is at the very start (or input empty),
+        // or once we're already navigating history, so multi-line editing works.
+        const hist = this.sentHistory || [];
+        const inHistory = this.historyIndex != null && this.historyIndex !== -1;
+        const caretAtStart = this.input.selectionStart === 0 && this.input.selectionEnd === 0;
+        if (hist.length && (this.input.value === "" || caretAtStart || inHistory)) {
+          e.preventDefault();
+          this.recallHistory(-1);
+        }
+      } else if (e.key === "ArrowDown" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (this.historyIndex != null && this.historyIndex !== -1) {
+          e.preventDefault();
+          this.recallHistory(1);
+        }
       } else if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) {
         // Try every clipboard method; if none yields an image, fall back to
         // absorbing any ![[..]] embed Obsidian may insert.
@@ -266,7 +282,12 @@ class JefrView extends ItemView {
         });
       }
     });
-    this.input.addEventListener("input", () => this.updateSendState());
+    this.input.addEventListener("input", () => {
+      // Real typing leaves history-navigation mode (programmatic value sets in
+      // recallHistory don't fire 'input', so they won't reset this).
+      this.historyIndex = -1;
+      this.updateSendState();
+    });
     // Capture phase so we see the paste before Obsidian's global handler can
     // swallow it; bubble phase as a backup.
     this.input.addEventListener("paste", (e) => this.onPaste(e), true);
@@ -694,10 +715,10 @@ class JefrView extends ItemView {
         // Combine text + image(s) into ONE message: send the text as the caption
         // on the first image so the agent receives it as a single item.
         attachments.forEach((a, i) => {
-          this.ws.send(JSON.stringify({ type: "sendImage", dataUrl: a.dataUrl, caption: i === 0 ? text : "" }));
+          this.queueSend({ type: "sendImage", dataUrl: a.dataUrl, caption: i === 0 ? text : "" });
         });
       } else if (text) {
-        this.ws.send(JSON.stringify({ type: "sendText", text }));
+        this.queueSend({ type: "sendText", text });
       }
       // Bubbles are rendered from the shared history broadcast (no optimistic add),
       // so the same message shows identically across all front-ends.
@@ -705,6 +726,7 @@ class JefrView extends ItemView {
       new Notice("jefr: failed to send message.");
       return;
     }
+    this.pushSentHistory(text);
     this.input.value = "";
     this.attachments = [];
     this.renderAttachments();
@@ -877,7 +899,11 @@ class JefrView extends ItemView {
     this.queuePanel.empty();
     const items = this.lastQueue || [];
     const head = this.queuePanel.createDiv({ cls: "jefr-queue-head" });
-    head.setText(items.length + " message" + (items.length === 1 ? "" : "s") + " queued");
+    head.createSpan({ text: items.length + " message" + (items.length === 1 ? "" : "s") + " queued" });
+    if (items.length > 0) {
+      const clearBtn = head.createEl("button", { cls: "jefr-queue-clear", text: "Clear all" });
+      clearBtn.onclick = () => this.clearQueueAll();
+    }
     for (const it of items) {
       const row = this.queuePanel.createDiv({ cls: "jefr-queue-row" });
       const type = it.type || "text";
@@ -887,7 +913,168 @@ class JefrView extends ItemView {
       else preview = (it.content || "").replace(/\s+/g, " ").trim();
       row.createSpan({ cls: "jefr-queue-type jefr-qt-" + type, text: type });
       row.createSpan({ cls: "jefr-queue-text", text: preview.length > 120 ? preview.slice(0, 120) + "…" : preview });
+      const del = row.createEl("button", { cls: "jefr-queue-del", attr: { "aria-label": "Delete this queued message" } });
+      del.setText("×");
+      del.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteQueueItem(it.id);
+      };
     }
+  }
+
+  recallHistory(dir) {
+    const hist = this.sentHistory || (this.sentHistory = []);
+    if (!hist.length) return;
+    if (this.historyIndex == null) this.historyIndex = -1;
+    if (this.historyIndex === -1) {
+      // Entering history navigation: stash the current draft to restore later.
+      this.historyDraft = this.input.value;
+    }
+    if (dir < 0) {
+      this.historyIndex =
+        this.historyIndex === -1 ? hist.length - 1 : Math.max(0, this.historyIndex - 1);
+    } else {
+      if (this.historyIndex === -1) return;
+      this.historyIndex += 1;
+      if (this.historyIndex >= hist.length) {
+        // Past the newest entry: restore the draft and leave history mode.
+        this.historyIndex = -1;
+        this.input.value = this.historyDraft || "";
+        this.placeCaretEnd();
+        this.updateSendState();
+        return;
+      }
+    }
+    this.input.value = hist[this.historyIndex];
+    this.placeCaretEnd();
+    this.updateSendState();
+  }
+
+  placeCaretEnd() {
+    const len = this.input.value.length;
+    try {
+      this.input.setSelectionRange(len, len);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  pushSentHistory(text) {
+    if (!text) return;
+    this.sentHistory = this.sentHistory || [];
+    if (this.sentHistory[this.sentHistory.length - 1] !== text) {
+      this.sentHistory.push(text);
+    }
+    if (this.sentHistory.length > 100) this.sentHistory.shift();
+    this.historyIndex = -1;
+    this.historyDraft = "";
+  }
+
+  deleteQueueItem(id) {
+    if (!id) return;
+    if (this.connStatus !== "online" || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      new Notice("jefr is offline — can't delete right now.");
+      return;
+    }
+    try {
+      this.ws.send(JSON.stringify({ type: "deleteQueueItem", id }));
+    } catch (e) {
+      new Notice("jefr: failed to delete queued message.");
+    }
+  }
+
+  clearQueueAll() {
+    if (this.connStatus !== "online" || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      new Notice("jefr is offline — can't clear right now.");
+      return;
+    }
+    try {
+      this.ws.send(JSON.stringify({ type: "clearQueue" }));
+    } catch (e) {
+      new Notice("jefr: failed to clear queue.");
+    }
+  }
+
+  /* ----- Reliable, acknowledged sends -----
+   * A WebSocket can stay readyState===OPEN for a while after the server has
+   * actually gone (e.g. Cursor reload), so ws.send() silently drops the frame
+   * and the message never reaches the queue. To make sends reliable we tag each
+   * with a client id, keep it "pending" until the server acks it, force a
+   * reconnect if no ack arrives, and re-send everything pending on reconnect.
+   * The server de-dupes by client id, so re-sends never double-queue. */
+
+  genCid() {
+    this._cidSeq = (this._cidSeq || 0) + 1;
+    return Date.now().toString(36) + "-" + this._cidSeq;
+  }
+
+  queueSend(payload) {
+    this.pending = this.pending || new Map();
+    const cid = this.genCid();
+    payload.cid = cid;
+    this.pending.set(cid, { payload, attempts: 0 });
+    this.flushSend(cid);
+  }
+
+  flushSend(cid) {
+    const entry = this.pending && this.pending.get(cid);
+    if (!entry) return;
+    entry.attempts = (entry.attempts || 0) + 1;
+    if (entry.attempts > 5) {
+      // Give up after repeated unacked attempts (e.g. a server too old to ack)
+      // so we never loop forever or pile up duplicates.
+      this.pending.delete(cid);
+      if (this._ackTimers && this._ackTimers.has(cid)) {
+        clearTimeout(this._ackTimers.get(cid));
+        this._ackTimers.delete(cid);
+      }
+      new Notice("jefr: couldn't confirm a message was delivered — try reloading Cursor.");
+      return;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(entry.payload));
+      } catch (e) {
+        /* will be retried via the ack watchdog / reconnect flush */
+      }
+    }
+    // Ack watchdog: if the server doesn't confirm soon, the socket is likely a
+    // zombie — force a reconnect, which re-flushes everything still pending.
+    this._ackTimers = this._ackTimers || new Map();
+    if (this._ackTimers.has(cid)) return;
+    const t = window.setTimeout(() => {
+      this._ackTimers.delete(cid);
+      if (this.pending && this.pending.has(cid)) {
+        this.recoverConnection();
+      }
+    }, 3000);
+    this._ackTimers.set(cid, t);
+  }
+
+  flushPending() {
+    if (!this.pending || !this.pending.size) return;
+    for (const cid of Array.from(this.pending.keys())) this.flushSend(cid);
+  }
+
+  ackSend(cid) {
+    if (this.pending) this.pending.delete(cid);
+    if (this._ackTimers && this._ackTimers.has(cid)) {
+      clearTimeout(this._ackTimers.get(cid));
+      this._ackTimers.delete(cid);
+    }
+  }
+
+  recoverConnection() {
+    if (this._recovering) return;
+    this._recovering = true;
+    try {
+      if (this.ws) this.ws.close(); // onclose -> scheduleReconnect -> connect -> onopen -> flushPending
+    } catch (e) {
+      /* ignore */
+    }
+    window.setTimeout(() => {
+      this._recovering = false;
+    }, 1500);
   }
 
   updateProgress(pct, label) {
@@ -936,8 +1123,11 @@ class JefrView extends ItemView {
 
     ws.onopen = () => {
       this.reconnectAttempts = 0;
+      this.awaitingPong = false;
       this.setStatus("online");
       this.startPing();
+      // Re-send anything that wasn't acknowledged before the (re)connection.
+      this.flushPending();
     };
 
     ws.onmessage = (ev) => {
@@ -955,8 +1145,10 @@ class JefrView extends ItemView {
           this.queueBadge.setText(c > 0 ? `${c} queued` : "");
           this.queueBadge.toggleClass("jefr-has-queue", c > 0);
         }
+      } else if (m.type === "sendAck") {
+        this.ackSend(m.cid);
       } else if (m.type === "pong") {
-        // keep-alive ack
+        this.awaitingPong = false;
       }
     };
 
@@ -990,15 +1182,23 @@ class JefrView extends ItemView {
 
   startPing() {
     this.stopPing();
+    this.awaitingPong = false;
     this.pingTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.awaitingPong) {
+          // Previous ping was never answered -> the socket is a zombie. Recover.
+          this.awaitingPong = false;
+          this.recoverConnection();
+          return;
+        }
         try {
           this.ws.send(JSON.stringify({ type: "ping" }));
+          this.awaitingPong = true;
         } catch {
           /* ignore */
         }
       }
-    }, 20000);
+    }, 12000);
   }
 
   stopPing() {

@@ -152,6 +152,27 @@
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.jefr-queue-clear {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-error, #dc2626);
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  box-shadow: none;
+}
+.jefr-queue-clear:hover {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.4);
 }
 .jefr-queue-row {
   display: flex;
@@ -186,6 +207,24 @@
   color: var(--text-normal);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.jefr-queue-del {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  font-size: 15px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  box-shadow: none;
+}
+.jefr-queue-del:hover {
+  background: rgba(220, 38, 38, 0.14);
+  color: var(--text-error, #dc2626);
 }
 
 .jefr-icon-btn {
@@ -682,7 +721,8 @@
 
 .jefr-minimized .jefr-workspace,
 .jefr-minimized .jefr-messages,
-.jefr-minimized .jefr-toolbar {
+.jefr-minimized .jefr-toolbar,
+.jefr-minimized .jefr-agent {
   display: none;
 }
 /* Compact: header sits above a full-height composer inside the scroll region.

@@ -30986,6 +30986,17 @@ async function touchAgentAlive(state) {
   } catch {
   }
 }
+var activeWaits = 0;
+var lastInteractionTs = Date.now();
+var BUSY_WINDOW_MS = Number(process.env.MESSENGER_BUSY_WINDOW_MS) || 18e4;
+var livenessTicker = setInterval(() => {
+  if (activeWaits > 0) {
+    void touchAgentAlive("waiting");
+  } else if (Date.now() - lastInteractionTs < BUSY_WINDOW_MS) {
+    void touchAgentAlive("working");
+  }
+}, 2500);
+livenessTicker.unref?.();
 async function readQueue() {
   try {
     const raw = await fs.readFile(QUEUE_FILE, "utf-8");
@@ -31248,58 +31259,65 @@ server.tool(
         "utf-8"
       );
     }
-    const waitStart = Date.now();
-    let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
-    while (!extra.signal.aborted) {
-      await touchAgentAlive("waiting");
-      const queue = await drainQueue();
-      if (queue.length > 0) {
-        const results = [];
-        for (const msg of queue) {
-          const processed = await processMessage(msg);
-          if (Array.isArray(processed))
-            results.push(...processed);
-          else
-            results.push(processed);
+    activeWaits++;
+    await touchAgentAlive("waiting");
+    try {
+      const waitStart = Date.now();
+      let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+      while (!extra.signal.aborted) {
+        const queue = await drainQueue();
+        if (queue.length > 0) {
+          const results = [];
+          for (const msg of queue) {
+            const processed = await processMessage(msg);
+            if (Array.isArray(processed))
+              results.push(...processed);
+            else
+              results.push(processed);
+          }
+          const last = results[results.length - 1];
+          if (results.length > 0 && last.type === "text") {
+            last.text += SYSTEM_SUFFIX;
+          } else {
+            results.push({ type: "text", text: SYSTEM_SUFFIX });
+          }
+          await appendServerLog("info", `check_messages delivered ${queue.length} queued item(s)`);
+          lastInteractionTs = Date.now();
+          return { content: results };
         }
-        const last = results[results.length - 1];
-        if (results.length > 0 && last.type === "text") {
-          last.text += SYSTEM_SUFFIX;
-        } else {
-          results.push({ type: "text", text: SYSTEM_SUFFIX });
+        if (Date.now() - waitStart >= MAX_WAIT_MS) {
+          await appendServerLog("info", `check_messages timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: "[system] No new messages. Do not show this to the user; call check_messages again immediately to keep listening."
+              }
+            ]
+          };
         }
-        await appendServerLog("info", `check_messages delivered ${queue.length} queued item(s)`);
-        return { content: results };
+        if (Date.now() >= nextHeartbeatAt) {
+          await emitHeartbeat(extra, "jefr is still waiting for the next user message.");
+          nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+        }
+        const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
+        if (!keepWaiting)
+          break;
       }
-      if (Date.now() - waitStart >= MAX_WAIT_MS) {
-        await appendServerLog("info", `check_messages timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: "[system] No new messages. Do not show this to the user; call check_messages again immediately to keep listening."
-            }
-          ]
-        };
-      }
-      if (Date.now() >= nextHeartbeatAt) {
-        await emitHeartbeat(extra, "jefr is still waiting for the next user message.");
-        nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
-      }
-      const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
-      if (!keepWaiting)
-        break;
+      await appendServerLog("warn", "check_messages was cancelled by the client while waiting");
+      return {
+        content: [
+          {
+            type: "text",
+            text: "[system] check_messages wait was interrupted by the client. If the session should continue, do not show this internal note to the user; call check_messages again."
+          }
+        ],
+        isError: true
+      };
+    } finally {
+      activeWaits--;
+      lastInteractionTs = Date.now();
     }
-    await appendServerLog("warn", "check_messages was cancelled by the client while waiting");
-    return {
-      content: [
-        {
-          type: "text",
-          text: "[system] check_messages wait was interrupted by the client. If the session should continue, do not show this internal note to the user; call check_messages again."
-        }
-      ],
-      isError: true
-    };
   }
 );
 server.tool(
@@ -31311,6 +31329,7 @@ server.tool(
   },
   async ({ progress, percent }) => {
     await ensureDataDir();
+    lastInteractionTs = Date.now();
     await touchAgentAlive("working");
     const payload = {
       content: progress,
@@ -31366,79 +31385,86 @@ server.tool(
       await fs.unlink(ANSWER_FILE);
     } catch {
     }
-    const waitStart = Date.now();
-    let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
-    while (!extra.signal.aborted) {
-      await touchAgentAlive("waiting");
-      try {
-        const raw = await fs.readFile(ANSWER_FILE, "utf-8");
-        const answerData = JSON.parse(raw);
+    activeWaits++;
+    await touchAgentAlive("waiting");
+    try {
+      const waitStart = Date.now();
+      let nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+      while (!extra.signal.aborted) {
         try {
-          await fs.unlink(QUESTION_FILE);
-        } catch {
-        }
-        try {
-          await fs.unlink(ANSWER_FILE);
-        } catch {
-        }
-        const answers = answerData.answers || [];
-        const parts = [];
-        for (const qItem of questionItems) {
-          const ans = answers.find((a) => a.questionId === qItem.id);
-          if (!ans)
-            continue;
-          const selected = ans.selected || [];
-          const other = ans.other || "";
-          let text = "";
-          if (selected.length > 0) {
-            const labels = selected.map(
-              (sid) => qItem.options.find((o) => o.id === sid)?.label || sid
-            );
-            text = "Selected: " + labels.join(", ");
+          const raw = await fs.readFile(ANSWER_FILE, "utf-8");
+          const answerData = JSON.parse(raw);
+          try {
+            await fs.unlink(QUESTION_FILE);
+          } catch {
           }
-          if (other) {
-            text += text ? "\nUser note: " + other : "User answer: " + other;
+          try {
+            await fs.unlink(ANSWER_FILE);
+          } catch {
           }
-          if (text) {
-            parts.push(
-              questionItems.length > 1 ? "\u3010" + qItem.question + "\u3011\n" + text : text
-            );
-          }
-        }
-        const finalText = parts.length > 0 ? parts.join("\n\n") : "(No answer)";
-        await appendServerLog("info", "ask_question received user answer");
-        return { content: [{ type: "text", text: finalText }] };
-      } catch {
-      }
-      if (Date.now() - waitStart >= MAX_WAIT_MS) {
-        await appendServerLog("info", `ask_question timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: "[system] User has not answered yet. Do not show this to the user; call ask_question again with the same arguments."
+          const answers = answerData.answers || [];
+          const parts = [];
+          for (const qItem of questionItems) {
+            const ans = answers.find((a) => a.questionId === qItem.id);
+            if (!ans)
+              continue;
+            const selected = ans.selected || [];
+            const other = ans.other || "";
+            let text = "";
+            if (selected.length > 0) {
+              const labels = selected.map(
+                (sid) => qItem.options.find((o) => o.id === sid)?.label || sid
+              );
+              text = "Selected: " + labels.join(", ");
             }
-          ]
-        };
-      }
-      if (Date.now() >= nextHeartbeatAt) {
-        await emitHeartbeat(extra, "jefr is still waiting for the user's answer.");
-        nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
-      }
-      const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
-      if (!keepWaiting)
-        break;
-    }
-    await appendServerLog("warn", "ask_question was cancelled by the client while waiting");
-    return {
-      content: [
-        {
-          type: "text",
-          text: "[system] ask_question wait was interrupted. If you still need an answer, do not show this internal note; call ask_question again."
+            if (other) {
+              text += text ? "\nUser note: " + other : "User answer: " + other;
+            }
+            if (text) {
+              parts.push(
+                questionItems.length > 1 ? "\u3010" + qItem.question + "\u3011\n" + text : text
+              );
+            }
+          }
+          const finalText = parts.length > 0 ? parts.join("\n\n") : "(No answer)";
+          await appendServerLog("info", "ask_question received user answer");
+          lastInteractionTs = Date.now();
+          return { content: [{ type: "text", text: finalText }] };
+        } catch {
         }
-      ],
-      isError: true
-    };
+        if (Date.now() - waitStart >= MAX_WAIT_MS) {
+          await appendServerLog("info", `ask_question timed out after ${MAX_WAIT_MS}ms, requesting re-call`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: "[system] User has not answered yet. Do not show this to the user; call ask_question again with the same arguments."
+              }
+            ]
+          };
+        }
+        if (Date.now() >= nextHeartbeatAt) {
+          await emitHeartbeat(extra, "jefr is still waiting for the user's answer.");
+          nextHeartbeatAt = Date.now() + HEARTBEAT_INTERVAL;
+        }
+        const keepWaiting = await sleepWithAbort(extra.signal, POLL_INTERVAL);
+        if (!keepWaiting)
+          break;
+      }
+      await appendServerLog("warn", "ask_question was cancelled by the client while waiting");
+      return {
+        content: [
+          {
+            type: "text",
+            text: "[system] ask_question wait was interrupted. If you still need an answer, do not show this internal note; call ask_question again."
+          }
+        ],
+        isError: true
+      };
+    } finally {
+      activeWaits--;
+      lastInteractionTs = Date.now();
+    }
   }
 );
 var transport = new StdioServerTransport();
