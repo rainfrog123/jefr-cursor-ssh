@@ -12,6 +12,7 @@ import {
   readQueueFor,
   sendTextTo,
   sendImageTo,
+  sendImagesTo,
   pushHistoryItem,
   readSharedHistory,
   appendSharedHistory,
@@ -23,6 +24,8 @@ import {
   deleteQueueItemFor,
   clearQueueFor,
   readSelectedAgentId,
+  writeSelectedAgentId,
+  listLiveAgents,
 } from "./messenger";
 
 /** Decode a `data:` URL into a temp file and queue it as an image message.
@@ -58,6 +61,52 @@ function handlePastedImage(
   } catch {
     return false;
   }
+}
+
+/** Decode several `data:` URLs into temp files and queue them as ONE image
+ *  message (text carried as the caption). Returns the number of images queued. */
+function handlePastedImages(
+  dataUrls: string[],
+  caption?: string,
+  target?: string,
+): number {
+  const decoded: Array<{ path: string; dataUrl: string; name: string }> = [];
+  for (const dataUrl of dataUrls) {
+    const match = /^data:image\/([\w.+-]+);base64,(.+)$/.exec(dataUrl || "");
+    if (!match) continue;
+    try {
+      const extRaw = match[1].toLowerCase();
+      const ext = extRaw === "jpeg" ? "jpg" : extRaw === "svg+xml" ? "svg" : extRaw;
+      const buf = Buffer.from(match[2], "base64");
+      const tmpPath = path.join(
+        os.tmpdir(),
+        `jefr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`,
+      );
+      fs.writeFileSync(tmpPath, buf);
+      decoded.push({ path: tmpPath, dataUrl, name: path.basename(tmpPath) });
+    } catch {
+      // skip this one
+    }
+  }
+  if (decoded.length === 0) return 0;
+  const tgt = target !== undefined ? target : targetAgentId();
+  // A single image keeps the plain path (identical to before).
+  if (decoded.length === 1) {
+    return handlePastedImage(decoded[0].dataUrl, caption, tgt) ? 1 : 0;
+  }
+  const item = sendImagesTo(tgt, decoded, caption);
+  pushHistoryItem({ ...item, dataUrl: decoded[0].dataUrl });
+  appendSharedHistory({
+    id: item.id,
+    kind: "image",
+    dataUrl: decoded[0].dataUrl,
+    caption,
+    name: decoded[0].name,
+    path: decoded[0].path,
+    images: decoded.map((d) => ({ path: d.path, dataUrl: d.dataUrl, name: d.name })),
+    timestamp: item.timestamp,
+  });
+  return decoded.length;
 }
 
 const WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -112,6 +161,14 @@ let lastPushState = "";
 let _workspaceInfo: WorkspaceInfo = { name: "", path: "" };
 /** Mirrors the jefr panel's Agent Picker — Obsidian sends follow this target. */
 let _selectedAgentId: string | undefined;
+/** Set by the extension so a remote client (Obsidian) picking an agent runs the
+ *  SAME selectAgent flow as the panel (persist + update the webview + rebroadcast),
+ *  keeping every front-end in sync. */
+let _onSelectAgent: ((agentId?: string) => void) | undefined;
+
+export function setSelectAgentHandler(fn: (agentId?: string) => void): void {
+  _onSelectAgent = fn;
+}
 
 export function setWorkspaceInfo(name: string, wsPath: string): void {
   _workspaceInfo = { name, path: wsPath };
@@ -251,6 +308,7 @@ function handleHttp(req: IncomingMessage, res: ServerResponse): void {
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
         agent: getAgentStatusFor(aid),
+        agents: listLiveAgents(),
         selectedAgentId: aid || null,
         port: serverPort,
       })
@@ -444,12 +502,12 @@ function handleWsMessage(client: WsClient, raw: string): void {
         let queued = 0;
         try {
           if (images.length > 0) {
-            // Text rides with the first image as its caption → one message.
-            images.forEach((a: { dataUrl: string }, i: number) => {
-              if (handlePastedImage(a.dataUrl, i === 0 ? text : "", target)) {
-                queued++;
-              }
-            });
+            // All images + text become ONE queue item (single combined message).
+            queued += handlePastedImages(
+              images.map((a: { dataUrl: string }) => a.dataUrl),
+              text,
+              target,
+            );
           } else if (text) {
             const item = sendTextTo(target, text);
             pushHistoryItem({
@@ -495,6 +553,21 @@ function handleWsMessage(client: WsClient, raw: string): void {
           }
         }
         break;
+      case "sendImages": {
+        // Text + one OR MORE images as a single combined message.
+        const urls = Array.isArray(msg.dataUrls)
+          ? msg.dataUrls.filter((u: unknown): u is string => typeof u === "string")
+          : [];
+        if (urls.length > 0) {
+          const fresh = !seenCid(msg.cid);
+          if (!fresh || handlePastedImages(urls, msg.caption, aid) > 0) {
+            if (msg.cid) wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
+            broadcastWs({ type: "queueUpdate", count: getQueueCountFor(aid) });
+            broadcastStateNow();
+          }
+        }
+        break;
+      }
       case "submitAnswer":
         if (msg.data) {
           writeAnswerFor(msg.data, aid);
@@ -503,6 +576,23 @@ function handleWsMessage(client: WsClient, raw: string): void {
       case "cancelQuestion":
         cancelQuestionFor(aid);
         break;
+      case "selectAgent": {
+        // A remote client (Obsidian) chose which agent to route to. Run the
+        // extension's full selectAgent flow when wired (keeps the panel in sync),
+        // else fall back to persisting + updating the local target.
+        const pick =
+          typeof msg.agentId === "string" && msg.agentId.trim()
+            ? msg.agentId.trim()
+            : undefined;
+        if (_onSelectAgent) {
+          _onSelectAgent(pick);
+        } else {
+          writeSelectedAgentId(pick);
+          setSelectedAgentId(pick);
+        }
+        broadcastStateNow();
+        break;
+      }
       case "ackReply":
         clearReplyFor(aid);
         break;
@@ -643,6 +733,7 @@ function buildPushState() {
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
     agent: getAgentStatusFor(aid),
+    agents: listLiveAgents(),
     selectedAgentId: aid || null,
     port: serverPort,
   };
@@ -1036,7 +1127,9 @@ function renderQueue(items){
 		var time=it.timestamp?new Date(it.timestamp).toLocaleTimeString():'';
 		var contentHtml;
 		if(tp==='image'){
-			contentHtml=(it.dataUrl?'<img src="'+it.dataUrl+'" style="max-width:120px;max-height:90px;border-radius:6px;display:block;margin-bottom:4px">':'')+(it.caption?'<div>'+esc(it.caption)+'</div>':(it.dataUrl?'':'[Image]'));
+			var imgs=(it.images&&it.images.length)?it.images:(it.dataUrl?[{dataUrl:it.dataUrl}]:[]);
+			var imgHtml='';for(var k=0;k<imgs.length;k++){if(imgs[k].dataUrl)imgHtml+='<img src="'+imgs[k].dataUrl+'" style="max-width:120px;max-height:90px;border-radius:6px;display:inline-block;margin:0 4px 4px 0">';}
+			contentHtml=imgHtml+(it.caption?'<div>'+esc(it.caption)+'</div>':(imgHtml?'':'[Image]'));
 		}else if(tp==='file'){
 			contentHtml=esc('[File] '+((it.path||'').split(/[\\/\\\\]/).pop()||''));
 		}else{
@@ -1055,8 +1148,9 @@ function renderMessages(history){
 	for(var i=0;i<history.length;i++){
 		var it=history[i];if(!it||!it.id||msgIds[it.id])continue;msgIds[it.id]=1;
 		var row=document.createElement('div');row.className='msg-row'+(it.kind==='reply'?' msg-ai':'');
-		if(it.kind==='image'&&it.dataUrl){
-			var im=document.createElement('img');im.className='msg-img';im.src=it.dataUrl;row.appendChild(im);
+		if(it.kind==='image'&&(( it.images&&it.images.length)||it.dataUrl)){
+			var mimgs=(it.images&&it.images.length)?it.images:[{dataUrl:it.dataUrl}];
+			for(var mi=0;mi<mimgs.length;mi++){if(!mimgs[mi].dataUrl)continue;var im=document.createElement('img');im.className='msg-img';im.src=mimgs[mi].dataUrl;row.appendChild(im);}
 			if(it.caption){var c=document.createElement('div');c.className='msg-cap';c.textContent=it.caption;row.appendChild(c);}
 		}else{
 			var t=document.createElement('div');t.className=it.kind==='reply'?'msg-reply':'msg-text';t.textContent=it.kind==='file'?('[File] '+(it.name||'')):(it.caption||it.text||'');row.appendChild(t);

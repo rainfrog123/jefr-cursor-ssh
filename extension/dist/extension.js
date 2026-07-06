@@ -4227,6 +4227,26 @@ function sendImageTo(agentId, filePath, caption, dataUrl) {
   });
   return item;
 }
+function sendImagesTo(agentId, images, caption) {
+  const first = images[0] || {};
+  const item = {
+    id: makeId(),
+    type: "image",
+    path: first.path,
+    dataUrl: first.dataUrl,
+    name: first.name,
+    caption,
+    images,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const dir = agentDirFor(agentId);
+  withLockIn(dir, () => {
+    const queue = readJsonArrayAt(path.join(dir, "queue.json"));
+    queue.push(item);
+    robustWriteFile(path.join(dir, "queue.json"), JSON.stringify(queue, null, 2));
+  });
+  return item;
+}
 function sendFileTo(agentId, filePath) {
   const dir = agentDirFor(agentId);
   withLockIn(dir, () => {
@@ -4342,6 +4362,31 @@ function cancelQuestionFor(agentId) {
     other: i === 0 ? "User cancelled the answer" : ""
   }));
   writeAnswerFor({ id: q.id, answers }, agentId);
+}
+function listLiveAgents(maxAgeMs = AGENT_STALE_MS) {
+  const root = path.join(dataDir, AGENTS_SUBDIR);
+  let ids = [];
+  try {
+    ids = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const id of ids) {
+    const beat = path.join(root, id, "agent-alive.json");
+    try {
+      const data = JSON.parse(fs.readFileSync(beat, "utf-8"));
+      const ts = typeof data.ts === "number" ? data.ts : 0;
+      if (Date.now() - ts > maxAgeMs) {
+        continue;
+      }
+      const state = data.state === "working" ? "working" : "waiting";
+      out.push({ id, state, ts, queueCount: getQueueCountFor(id) });
+    } catch {
+    }
+  }
+  out.sort((a, b) => b.ts - a.ts);
+  return out;
 }
 function scanAllAgents(maxAgeMs = AGENT_STALE_MS) {
   const root = path.join(dataDir, AGENTS_SUBDIR);
@@ -4827,6 +4872,45 @@ function handlePastedImage(dataUrl, caption, target) {
     return false;
   }
 }
+function handlePastedImages(dataUrls, caption, target) {
+  const decoded = [];
+  for (const dataUrl of dataUrls) {
+    const match = /^data:image\/([\w.+-]+);base64,(.+)$/.exec(dataUrl || "");
+    if (!match)
+      continue;
+    try {
+      const extRaw = match[1].toLowerCase();
+      const ext = extRaw === "jpeg" ? "jpg" : extRaw === "svg+xml" ? "svg" : extRaw;
+      const buf = Buffer.from(match[2], "base64");
+      const tmpPath = path2.join(
+        os2.tmpdir(),
+        `jefr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`
+      );
+      fs2.writeFileSync(tmpPath, buf);
+      decoded.push({ path: tmpPath, dataUrl, name: path2.basename(tmpPath) });
+    } catch {
+    }
+  }
+  if (decoded.length === 0)
+    return 0;
+  const tgt = target !== void 0 ? target : targetAgentId();
+  if (decoded.length === 1) {
+    return handlePastedImage(decoded[0].dataUrl, caption, tgt) ? 1 : 0;
+  }
+  const item = sendImagesTo(tgt, decoded, caption);
+  pushHistoryItem({ ...item, dataUrl: decoded[0].dataUrl });
+  appendSharedHistory({
+    id: item.id,
+    kind: "image",
+    dataUrl: decoded[0].dataUrl,
+    caption,
+    name: decoded[0].name,
+    path: decoded[0].path,
+    images: decoded.map((d) => ({ path: d.path, dataUrl: d.dataUrl, name: d.name })),
+    timestamp: item.timestamp
+  });
+  return decoded.length;
+}
 var WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 var PREFERRED_PORT = 39517;
 var MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
@@ -4857,6 +4941,10 @@ var pollTimer = null;
 var lastPushState = "";
 var _workspaceInfo = { name: "", path: "" };
 var _selectedAgentId;
+var _onSelectAgent;
+function setSelectAgentHandler(fn) {
+  _onSelectAgent = fn;
+}
 function setWorkspaceInfo(name, wsPath) {
   _workspaceInfo = { name, path: wsPath };
 }
@@ -4976,6 +5064,7 @@ function handleHttp(req, res) {
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
         agent: getAgentStatusFor(aid),
+        agents: listLiveAgents(),
         selectedAgentId: aid || null,
         port: serverPort
       })
@@ -5148,11 +5237,11 @@ function handleWsMessage(client, raw) {
         let queued = 0;
         try {
           if (images.length > 0) {
-            images.forEach((a, i) => {
-              if (handlePastedImage(a.dataUrl, i === 0 ? text : "", target)) {
-                queued++;
-              }
-            });
+            queued += handlePastedImages(
+              images.map((a) => a.dataUrl),
+              text,
+              target
+            );
           } else if (text) {
             const item = sendTextTo(target, text);
             pushHistoryItem({
@@ -5199,6 +5288,19 @@ function handleWsMessage(client, raw) {
           }
         }
         break;
+      case "sendImages": {
+        const urls = Array.isArray(msg.dataUrls) ? msg.dataUrls.filter((u) => typeof u === "string") : [];
+        if (urls.length > 0) {
+          const fresh = !seenCid(msg.cid);
+          if (!fresh || handlePastedImages(urls, msg.caption, aid) > 0) {
+            if (msg.cid)
+              wsSend(client.socket, JSON.stringify({ type: "sendAck", cid: msg.cid }));
+            broadcastWs({ type: "queueUpdate", count: getQueueCountFor(aid) });
+            broadcastStateNow();
+          }
+        }
+        break;
+      }
       case "submitAnswer":
         if (msg.data) {
           writeAnswerFor(msg.data, aid);
@@ -5207,6 +5309,17 @@ function handleWsMessage(client, raw) {
       case "cancelQuestion":
         cancelQuestionFor(aid);
         break;
+      case "selectAgent": {
+        const pick = typeof msg.agentId === "string" && msg.agentId.trim() ? msg.agentId.trim() : void 0;
+        if (_onSelectAgent) {
+          _onSelectAgent(pick);
+        } else {
+          writeSelectedAgentId(pick);
+          setSelectedAgentId(pick);
+        }
+        broadcastStateNow();
+        break;
+      }
       case "ackReply":
         clearReplyFor(aid);
         break;
@@ -5329,6 +5442,7 @@ function buildPushState() {
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
     agent: getAgentStatusFor(aid),
+    agents: listLiveAgents(),
     selectedAgentId: aid || null,
     port: serverPort
   };
@@ -5714,7 +5828,9 @@ function renderQueue(items){
 		var time=it.timestamp?new Date(it.timestamp).toLocaleTimeString():'';
 		var contentHtml;
 		if(tp==='image'){
-			contentHtml=(it.dataUrl?'<img src="'+it.dataUrl+'" style="max-width:120px;max-height:90px;border-radius:6px;display:block;margin-bottom:4px">':'')+(it.caption?'<div>'+esc(it.caption)+'</div>':(it.dataUrl?'':'[Image]'));
+			var imgs=(it.images&&it.images.length)?it.images:(it.dataUrl?[{dataUrl:it.dataUrl}]:[]);
+			var imgHtml='';for(var k=0;k<imgs.length;k++){if(imgs[k].dataUrl)imgHtml+='<img src="'+imgs[k].dataUrl+'" style="max-width:120px;max-height:90px;border-radius:6px;display:inline-block;margin:0 4px 4px 0">';}
+			contentHtml=imgHtml+(it.caption?'<div>'+esc(it.caption)+'</div>':(imgHtml?'':'[Image]'));
 		}else if(tp==='file'){
 			contentHtml=esc('[File] '+((it.path||'').split(/[\\/\\\\]/).pop()||''));
 		}else{
@@ -5733,8 +5849,9 @@ function renderMessages(history){
 	for(var i=0;i<history.length;i++){
 		var it=history[i];if(!it||!it.id||msgIds[it.id])continue;msgIds[it.id]=1;
 		var row=document.createElement('div');row.className='msg-row'+(it.kind==='reply'?' msg-ai':'');
-		if(it.kind==='image'&&it.dataUrl){
-			var im=document.createElement('img');im.className='msg-img';im.src=it.dataUrl;row.appendChild(im);
+		if(it.kind==='image'&&(( it.images&&it.images.length)||it.dataUrl)){
+			var mimgs=(it.images&&it.images.length)?it.images:[{dataUrl:it.dataUrl}];
+			for(var mi=0;mi<mimgs.length;mi++){if(!mimgs[mi].dataUrl)continue;var im=document.createElement('img');im.className='msg-img';im.src=mimgs[mi].dataUrl;row.appendChild(im);}
 			if(it.caption){var c=document.createElement('div');c.className='msg-cap';c.textContent=it.caption;row.appendChild(c);}
 		}else{
 			var t=document.createElement('div');t.className=it.kind==='reply'?'msg-reply':'msg-text';t.textContent=it.kind==='file'?('[File] '+(it.name||'')):(it.caption||it.text||'');row.appendChild(t);
@@ -6023,6 +6140,24 @@ var CdpMonitor = class extends import_events.EventEmitter {
   }
   /** Force an immediate poll (useful after actions). */
   async pollNow() {
+    return this.poll();
+  }
+  /** Hard refresh: tear down the current CDP session and dedupe cache, then
+   *  poll fresh. A plain pollNow() reuses the existing session and skips the
+   *  status emit when nothing changed — useless when the session has drifted or
+   *  gone stale (selectors changed, page swapped, socket half-dead). Dropping the
+   *  session forces the next poll to reconnect from scratch, and clearing
+   *  lastStatus guarantees the status event re-fires so the roster is rebuilt and
+   *  re-pushed even if the result is byte-identical. Used by the manual Refresh
+   *  button so it can actually recover a wedged monitor instead of no-op'ing. */
+  async forceReconnect() {
+    if (this.session) {
+      this.session.close();
+      this.session = null;
+    }
+    this.wsUrl = null;
+    this.pageTitle = null;
+    this.lastStatus = null;
     return this.poll();
   }
   async connect() {
@@ -6389,6 +6524,85 @@ var CdpMonitor = class extends import_events.EventEmitter {
       return false;
     }
   }
+  /** Equalize every agent tile to the same width. Cursor's tiling is a binary
+   *  split tree (`.ui-tiling` → `.ui-tiling-branch` → `.ui-tiling-child`…), and
+   *  each Ctrl+D split halves the focused pane, so repeated spawns leave the
+   *  leaves lopsided (50% / 25% / 12.5% / …). We can't just set every split to
+   *  50/50 — that's what causes the imbalance — so instead we weight each branch's
+   *  children by how many leaf panels live under each side. Setting flex-basis on
+   *  the `.ui-tiling-child` wrappers (same property Cursor itself uses) makes all
+   *  leaves render at equal size. Returns true when at least one tiling tree was
+   *  balanced. */
+  async equalizeTiles() {
+    if (!this.session)
+      return false;
+    const js = `
+(function() {
+  const root = document.querySelector('.ui-tiling');
+  if (!root) return false;
+  const leaves = (el) => {
+    const p = el.querySelectorAll('.ui-tiling-panel');
+    return p.length || 1;
+  };
+  function balance(branch) {
+    const kids = [...branch.children].filter(
+      (c) => c.classList && c.classList.contains('ui-tiling-child')
+    );
+    if (!kids.length) return;
+    const counts = kids.map(leaves);
+    const total = counts.reduce((a, b) => a + b, 0) || kids.length;
+    kids.forEach((c, i) => {
+      const pct = (counts[i] / total) * 100;
+      c.style.flexBasis = 'calc(' + pct + '% - var(--tiling-sash-layout-size) / 2)';
+      const inner = [...c.children].find(
+        (x) => x.classList && x.classList.contains('ui-tiling-branch')
+      );
+      if (inner) balance(inner);
+    });
+  }
+  const top = [...root.children].find(
+    (x) => x.classList && x.classList.contains('ui-tiling-branch')
+  );
+  if (!top) return false;
+  balance(top);
+  return true;
+})()
+    `;
+    try {
+      return !!await this.session.evaluate(js, false);
+    } catch {
+      return false;
+    }
+  }
+  /** Hide (not remove) the "Payment failed … Manage Billing" banner(s). The banner
+   *  has no native dismiss button, so we set display:none on any matching
+   *  `.ui-short-tray`. Hiding (vs removing) keeps the node in the DOM so React's
+   *  reconciler stays happy. No in-page observer — the caller re-applies this on the
+   *  regular poll (status change + self-heal tick), so a React re-render that brings
+   *  the banner back is undone on the next poll. Idempotent and cheap. Returns how
+   *  many were hidden. */
+  async hideBillingBanners() {
+    if (!this.session)
+      return 0;
+    const js = `
+(function(){
+  let n = 0;
+  document.querySelectorAll('.ui-short-tray').forEach(tr => {
+    if (/payment failed|manage billing/i.test(tr.textContent || '')) {
+      if (tr.style.display !== 'none') tr.style.display = 'none';
+      n++;
+    }
+  });
+  return n;
+})()
+    `;
+    try {
+      const v = await this.session.evaluate(js, false);
+      return typeof v === "number" ? v : 0;
+    } catch {
+      return 0;
+    }
+  }
   async queryTileState() {
     const js = `
 (function() {
@@ -6519,14 +6733,45 @@ var CdpMonitor = class extends import_events.EventEmitter {
     const tail = full.length > 400 ? full.slice(-400) : full;
     const worked = /worked for\\s+[\\dhms ]+/i.test(statusText) || /worked for\\s+[\\dhms ]+/i.test(tail);
 
+    // Restored-draft signal: when a held-open turn dies, Cursor puts the un-sent
+    // prompt back into the composer. A tile sitting idle with the injected spawn
+    // prompt still in its composer = the agent is gone, even with no "Worked for\u2026"
+    // stamp. Fingerprint-scoped to the spawn prompts so a human-typed draft can't
+    // trip it; only meaningful for a previously-connected agent (gated in tile-state).
+    const draftEl = t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror') || t.querySelector('.tiptap.ProseMirror');
+    const draftText = ((draftEl && draftEl.textContent) || '').trim();
+    const draftPending =
+      !generating && !planning && !mcpRunning && !toolWorking &&
+      draftText.length > 0 &&
+      /keep the mcp connection|stand by|check\\s*messages|agent_id|invoke the mcp|call the mcp directly/i.test(draftText);
+
+    // Standby-in-transcript: the agent replied "standing by / waiting" and stopped
+    // re-calling check_messages. Catches the drop even when the composer is empty
+    // and there's no "Worked for\u2026" stamp \u2014 the case that kept reading as Working.
+    const standbyCutoff =
+      !generating && !planning && !mcpRunning && !toolWorking &&
+      /standing\\s+by|waiting for your next instruction/i.test(tail);
+
     const model = t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';
+
+    // Billing-blocked banner: "Payment failed \u2026 Manage Billing" (a .ui-short-tray
+    // with a Manage Billing button). Scoped to short tray/button text so a chat
+    // message that merely mentions billing can't false-trip it.
+    const billingBlocked = [...t.querySelectorAll('.ui-short-tray, .ui-button, button, a')]
+      .some(e => {
+        const x = (e.textContent || '').trim();
+        return x.length < 160 && /payment failed|manage billing/i.test(x);
+      });
 
     // Precedence: a live MCP call wins over planning/generating, so a transient
     // "Planning next moves" shimmer can't demote a held-open connection (which
     // previously flip-flopped the state, inflating connect counts and resetting
     // uptime).
+    // A "Worked for\u2026" stamp or a restored draft means the turn ended, so a still-
+    // "running" jefr card is stale and must NOT force mcp_connected (that was masking
+    // cut-off tiles as connected/working).
     let state = 'idle';
-    if (mcpRunning) state = 'mcp_connected';
+    if (mcpRunning && !worked && !draftPending && !standbyCutoff) state = 'mcp_connected';
     else if (planning) state = 'planning';
     else if (generating) state = 'generating';
     else if (toolWorking) state = 'generating';
@@ -6541,8 +6786,11 @@ var CdpMonitor = class extends import_events.EventEmitter {
       generating: generating || toolWorking,
       planning,
       worked,
+      draftPending,
+      standbyCutoff,
+      billingBlocked,
     };
-  });
+    });
 })()
     `;
     const result = await this.session.evaluate(js, false);
@@ -6581,9 +6829,12 @@ function isConnectedState(state) {
   return state === "mcp_connected" || state === "waiting";
 }
 function isServerDropped(a) {
-  return a.connectCount > 0 && !isLiveState(a.state) && !a.worked && (a.mcpErrored || a.queueCount > 0 || !a.heartbeatAlive);
+  return a.connectCount > 0 && !isLiveState(a.state) && !a.worked && (a.mcpErrored || a.standbyCutoff || a.queueCount > 0 || !a.heartbeatAlive);
 }
-function resolveState(rawState, heartbeatState, loopAlive, mcpErrored, busyAlive) {
+function isUnhealthy(a) {
+  return !a.agentId.startsWith("tile:") && a.tileIndex >= 0 && !isLiveState(a.state);
+}
+function resolveState(rawState, heartbeatState, loopAlive, mcpErrored, busyAlive, ended) {
   if (rawState === "mcp_connected")
     return "mcp_connected";
   if (rawState === "generating" || rawState === "planning")
@@ -6592,10 +6843,11 @@ function resolveState(rawState, heartbeatState, loopAlive, mcpErrored, busyAlive
     return "idle";
   if (loopAlive)
     return "mcp_connected";
-  if (busyAlive)
+  if (busyAlive && !ended)
     return "generating";
-  if (heartbeatState && rawState === "idle")
-    return heartbeatState;
+  if (heartbeatState === "waiting" && rawState === "idle" && !ended) {
+    return "mcp_connected";
+  }
   return rawState;
 }
 var TileStateManager = class {
@@ -6639,7 +6891,8 @@ var TileStateManager = class {
         heartbeatStates.get(id),
         loopAlive,
         tile.mcpErrored,
-        busyAlive
+        busyAlive,
+        tile.worked || tile.draftPending || tile.standbyCutoff
       );
       if (!existing) {
         const newState = {
@@ -6663,11 +6916,17 @@ var TileStateManager = class {
           reconnectStreak: 0,
           lastReconnectAt: 0,
           worked: tile.worked,
+          draftPending: tile.draftPending,
+          standbyCutoff: tile.standbyCutoff,
           mcpErrored: tile.mcpErrored,
           heartbeatAlive: heartbeatStates.has(id),
           lastSeen: now,
-          lastConnectedMs: 0
+          lastConnectedMs: 0,
+          droppedSince: 0
         };
+        if (isUnhealthy(newState)) {
+          newState.droppedSince = newState.worked || isServerDropped(newState) ? 1 : now;
+        }
         this.agents.set(id, newState);
         transitions.push({ type: "new_agent", agentId: id, to: state });
         if (isConnectedState(state)) {
@@ -6679,6 +6938,8 @@ var TileStateManager = class {
         existing.model = tile.model;
         existing.queueCount = queueCounts.get(id) || 0;
         existing.worked = tile.worked;
+        existing.draftPending = tile.draftPending;
+        existing.standbyCutoff = tile.standbyCutoff;
         existing.mcpErrored = tile.mcpErrored;
         existing.heartbeatAlive = heartbeatStates.has(id);
         existing.lastMcpAt = lastMcpAt;
@@ -6717,6 +6978,12 @@ var TileStateManager = class {
         if (existing.connectCount === 0 && tile.worked) {
           existing.connectCount = 1;
         }
+        if (isUnhealthy(existing)) {
+          if (!existing.droppedSince)
+            existing.droppedSince = now;
+        } else {
+          existing.droppedSince = 0;
+        }
       }
     }
     for (const [agentId, agent] of this.agents) {
@@ -6737,8 +7004,11 @@ var TileStateManager = class {
         agent.lastMcpAt = 0;
         agent.lastBusyAt = 0;
         agent.worked = false;
+        agent.draftPending = false;
+        agent.standbyCutoff = false;
         agent.mcpErrored = false;
         agent.heartbeatAlive = false;
+        agent.droppedSince = 0;
         if (prevState !== "idle") {
           agent.state = "idle";
           const heldMs = prevConnectedSince ? now - prevConnectedSince : 0;
@@ -6784,7 +7054,8 @@ var TileStateManager = class {
    *  The stamp / error / queue gates distinguish a real drop from a tile that's
    *  merely idle (freshly spawned, or the user is mid-type), avoiding needless
    *  re-primes. */
-  getDroppedAgents() {
+  getDroppedAgents(confirmMs = 0) {
+    const now = Date.now();
     return this.getAgents().filter(
       (a) => (
         // Real agentId only — never try to reconnect a synthetic slot id, which
@@ -6793,8 +7064,22 @@ var TileStateManager = class {
         a.tileIndex >= 0 && // Must have connected before (so it's a DROP, not a new tile)
         a.connectCount > 0 && // Not currently live (MCP loop, working heartbeat, generating, or planning)
         !isLiveState(a.state) && // A clean cut-out (completion stamp) OR an abrupt server drop.
-        (a.worked || isServerDropped(a))
+        (a.worked || a.draftPending || isServerDropped(a)) && // CONFIRM window: only act on a tile that has stayed dropped for at least
+        // `confirmMs` (0 = act immediately, used by the manual "Close dropped").
+        (confirmMs <= 0 || a.droppedSince > 0 && now - a.droppedSince >= confirmMs)
       )
+    );
+  }
+  /** Tiles the "Keep N connected" self-heal should act on: ANY real, visible tile
+   *  that is not live and has stayed non-live for `confirmMs`. Broader than
+   *  getDroppedAgents (the clean-cutoff / server-drop subset used for UI labels and
+   *  the manual "Close dropped") — Keep-N must also recycle a plain "down" tile
+   *  (e.g. one re-discovered idle after a reload, or whose loop ended with no
+   *  stamp) so the pool keeps N agents actually mcp_connected / working. */
+  getAgentsNeedingHeal(confirmMs = 0) {
+    const now = Date.now();
+    return this.getAgents().filter(
+      (a) => !a.agentId.startsWith("tile:") && a.tileIndex >= 0 && !isLiveState(a.state) && (confirmMs <= 0 || a.droppedSince > 0 && now - a.droppedSince >= confirmMs)
     );
   }
   /** Mark a reconnect attempt for an agent. */
@@ -6835,7 +7120,7 @@ var TileStateManager = class {
       state: a.state,
       // A clean cut-out: previously connected, now idle, "Worked for..."
       // stamp present. Lets the UI show a distinct reconnectable state.
-      dropped: a.connectCount > 0 && !isLiveState(a.state) && a.worked,
+      dropped: a.connectCount > 0 && !isLiveState(a.state) && (a.worked || a.draftPending),
       // An abrupt server drop (no clean stamp) — surfaced separately so the UI
       // can flag it distinctly from a polite cut-off. Synthetic slot ids can't
       // be re-primed, so never mark them.
@@ -6874,7 +7159,8 @@ var lastActivityTime = Date.now();
 var selectedAgentId;
 var lastAgentListJson;
 var autoReconnect = false;
-var RECONNECT_DEBOUNCE_MS = 45e3;
+var RECONNECT_DEBOUNCE_MS = 3e4;
+var CONFIRM_DROP_MS = 3e4;
 var AGENT_FORGET_MS = 5 * 6e4;
 var MAX_RECONNECT_ATTEMPTS = 3;
 var GC_AGENT_DIRS = false;
@@ -6925,6 +7211,9 @@ function startCdpMonitoring() {
       } else if (t.type === "new_agent")
         dlog(`agent ${who} appeared (${t.to})`);
     }
+    if (status.tiles.some((t) => t.billingBlocked)) {
+      hideBillingBannersNow();
+    }
     if (autoReconnect && !workflowProc && !healingTile) {
       void maintainPool();
     }
@@ -6963,7 +7252,8 @@ function pushAgentListFromCdp() {
     agents: agents.map((a) => ({ ...a, connectMs: agentConnectMs.get(a.id) })),
     selected: selectedAgentId || null,
     autoReconnect,
-    targetAgentCount: TARGET_AGENT_COUNT,
+    targetAgentCount,
+    workflowModel: poolModel,
     cdpConnected: lastCdpStatus?.connected ?? false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0
@@ -7071,19 +7361,49 @@ function resolveWorkflowScript() {
   return resolvedWorkflowScript || null;
 }
 var WORKFLOW_DEFAULT_MODEL = "Opus 4.8 1M Extra High Fast";
-var TARGET_AGENT_COUNT = 5;
+var poolModel = WORKFLOW_DEFAULT_MODEL;
+var WORKFLOW_MODEL_KEY = "jefr.workflowModel";
+function setPoolModel(next) {
+  const m = next && next.trim() || WORKFLOW_DEFAULT_MODEL;
+  if (m === poolModel)
+    return;
+  poolModel = m;
+  void extensionContext?.globalState.update(WORKFLOW_MODEL_KEY, m);
+  dlog(`pool model set to ${m}`);
+  lastAgentListJson = void 0;
+  pushAgentList();
+}
+var DEFAULT_TARGET_AGENT_COUNT = 5;
+var MIN_TARGET_AGENT_COUNT = 1;
+var MAX_TARGET_AGENT_COUNT = 12;
+var targetAgentCount = DEFAULT_TARGET_AGENT_COUNT;
+var extensionContext;
+var TARGET_AGENT_COUNT_KEY = "jefr.targetAgentCount";
+function setTargetAgentCount(next) {
+  const clamped = Math.max(
+    MIN_TARGET_AGENT_COUNT,
+    Math.min(MAX_TARGET_AGENT_COUNT, Math.floor(next))
+  );
+  if (clamped === targetAgentCount)
+    return;
+  targetAgentCount = clamped;
+  void extensionContext?.globalState.update(TARGET_AGENT_COUNT_KEY, clamped);
+  dlog(`target agent count set to ${clamped}`);
+  lastAgentListJson = void 0;
+  pushAgentList();
+}
 var pendingAgentAdds = 0;
 var pendingAgentModel = WORKFLOW_DEFAULT_MODEL;
 function queueAgentAdds(count, model) {
   pendingAgentModel = model && model.trim() || WORKFLOW_DEFAULT_MODEL;
   const current = tileStateManager.toAgentViews().length;
-  const room = Math.max(0, TARGET_AGENT_COUNT - current - pendingAgentAdds);
+  const room = Math.max(0, targetAgentCount - current - pendingAgentAdds);
   const toAdd = Math.max(0, Math.min(count, room));
   if (toAdd <= 0) {
     postWorkflow({
       type: "workflowOutput",
       stream: "stderr",
-      line: `[jefr] Pool already full or filling (target ${TARGET_AGENT_COUNT}).`
+      line: `[jefr] Pool already full or filling (target ${targetAgentCount}).`
     });
     return;
   }
@@ -7091,7 +7411,7 @@ function queueAgentAdds(count, model) {
   postWorkflow({
     type: "workflowOutput",
     stream: "stdout",
-    line: `[jefr] Filling pool: queued ${toAdd} agent${toAdd !== 1 ? "s" : ""} (target ${TARGET_AGENT_COUNT}).`
+    line: `[jefr] Filling pool: queued ${toAdd} agent${toAdd !== 1 ? "s" : ""} (target ${targetAgentCount}).`
   });
   processAgentAddQueue();
 }
@@ -7103,7 +7423,7 @@ function processAgentAddQueue() {
     return;
   }
   const current = tileStateManager.toAgentViews().length;
-  if (current >= TARGET_AGENT_COUNT) {
+  if (current >= targetAgentCount) {
     pendingAgentAdds = 0;
     return;
   }
@@ -7111,13 +7431,32 @@ function processAgentAddQueue() {
   runWorkflow({ model: pendingAgentModel, keepTiles: true });
 }
 var healingTile = false;
-function topUpPool() {
-  if (workflowProc || pendingAgentAdds > 0 || healingTile)
+function hideBillingBannersNow() {
+  if (!cdpEnabled)
     return;
-  const tiles = tileStateManager.toAgentViews().length;
-  if (tiles < TARGET_AGENT_COUNT) {
-    queueAgentAdds(TARGET_AGENT_COUNT - tiles, WORKFLOW_DEFAULT_MODEL);
-  }
+  void getCdpMonitor().hideBillingBanners().then((n) => {
+    if (n > 0)
+      dlog(`hid ${n} payment-failed banner(s)`);
+  }).catch(() => {
+  });
+}
+var poolTickTimer;
+var POOL_TICK_MS = 5e3;
+function startPoolTick() {
+  if (poolTickTimer)
+    return;
+  poolTickTimer = setInterval(() => {
+    if (!cdpEnabled || !(lastCdpStatus?.connected ?? false))
+      return;
+    if ((lastCdpStatus?.tiles || []).some((t) => t.billingBlocked)) {
+      hideBillingBannersNow();
+    }
+    if (workflowProc || healingTile)
+      return;
+    if (!autoReconnect || pendingAgentAdds > 0)
+      return;
+    void maintainPool();
+  }, POOL_TICK_MS);
 }
 var lastDirGcAt = 0;
 var DIR_GC_INTERVAL_MS = 3e4;
@@ -7165,30 +7504,29 @@ async function maintainPool() {
     pushAgentList();
     return;
   }
-  const dropped = tileStateManager.getDroppedAgents();
+  const dropped = tileStateManager.getAgentsNeedingHeal(CONFIRM_DROP_MS);
   if (dropped.length > 0) {
-    const stranded = dropped.find((a) => a.queueCount > 0);
-    if (stranded) {
+    const victim = dropped[0];
+    if (victim.connectCount > 0) {
       dlog(
-        `keep-connected: re-priming dropped agent ${stranded.agentId.slice(0, 8)} in place (${stranded.queueCount} queued)`,
+        `keep-connected: re-priming dropped agent ${victim.agentId.slice(0, 8)} in place` + (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
         "warn"
       );
       postWorkflow({
         type: "workflowOutput",
         stream: "stdout",
-        line: `[jefr] keep-connected: agent ${stranded.agentId.slice(0, 8)} dropped with ${stranded.queueCount} queued \u2014 re-priming in place to drain its queue`
+        line: `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} dropped` + (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") + " \u2014 re-priming in place"
       });
-      tileStateManager.markReconnectAttempt(stranded.agentId);
-      runWorkflow({ reconnect: true, agentId: stranded.agentId });
+      tileStateManager.markReconnectAttempt(victim.agentId);
+      runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
       return;
     }
-    const victim = dropped[0];
     healingTile = true;
-    dlog(`keep-connected: closing cut-off agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
+    dlog(`keep-connected: closing idle agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
     postWorkflow({
       type: "workflowOutput",
       stream: "stdout",
-      line: `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} cut out \u2014 closing its tile and spawning a replacement`
+      line: `[jefr] keep-connected: idle tile ${victim.agentId.slice(0, 8)} \u2014 closing and spawning a replacement`
     });
     try {
       const closed = cdpEnabled ? await getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false) : false;
@@ -7200,7 +7538,7 @@ async function maintainPool() {
           selectAgent(void 0);
       } else {
         tileStateManager.markReconnectAttempt(victim.agentId);
-        runWorkflow({ reconnect: true, agentId: victim.agentId });
+        runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
         return;
       }
     } finally {
@@ -7209,7 +7547,6 @@ async function maintainPool() {
     lastAgentListJson = void 0;
     pushAgentList();
   }
-  topUpPool();
 }
 async function closeDroppedTiles() {
   if (healingTile)
@@ -7334,11 +7671,11 @@ function runWorkflow(opts) {
     args.push(opts.autoPrompt);
   }
   if (!opts.reconnect) {
-    args.push("--model", opts.model && opts.model.trim() || WORKFLOW_DEFAULT_MODEL);
     if (opts.keepTiles !== false) {
       args.push("--keep-tiles");
     }
   }
+  args.push("--model", opts.model && opts.model.trim() || WORKFLOW_DEFAULT_MODEL);
   if (opts.opusPrompt && opts.opusPrompt.trim()) {
     args.push("--type-text", opts.opusPrompt);
   }
@@ -7422,6 +7759,11 @@ function runWorkflow(opts) {
     spawnBaselineAgentIds = void 0;
     lastAgentListJson = void 0;
     pushAgentList();
+    if (cdpEnabled && !opts.reconnect && pendingAgentAdds <= 0) {
+      setTimeout(() => {
+        void getCdpMonitor().equalizeTiles().catch(() => false);
+      }, 600);
+    }
     processAgentAddQueue();
   });
 }
@@ -7518,6 +7860,20 @@ function readMcpDataDir(workspaceFolders = []) {
 }
 function activate(context) {
   extensionVersion = context.extension.packageJSON?.version || "0.0.0";
+  extensionContext = context;
+  targetAgentCount = Math.max(
+    MIN_TARGET_AGENT_COUNT,
+    Math.min(
+      MAX_TARGET_AGENT_COUNT,
+      Math.floor(
+        context.globalState.get(
+          TARGET_AGENT_COUNT_KEY,
+          DEFAULT_TARGET_AGENT_COUNT
+        )
+      )
+    )
+  );
+  poolModel = context.globalState.get(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL) || WORKFLOW_DEFAULT_MODEL;
   const workspaceFolders = vscode.workspace.workspaceFolders || [];
   currentDataDir = readMcpDataDir(workspaceFolders) ?? computeDataDir(workspaceFolders);
   setDataDir(currentDataDir);
@@ -7531,8 +7887,9 @@ function activate(context) {
         text: item.content,
         caption: item.caption,
         path: item.path,
-        name: item.path ? path3.basename(item.path) : void 0,
+        name: item.name || (item.path ? path3.basename(item.path) : void 0),
         dataUrl: item.dataUrl,
+        images: item.images,
         time: new Date(item.timestamp || Date.now()).toLocaleTimeString()
       }
     });
@@ -7587,7 +7944,9 @@ function activate(context) {
   startIdleTimer();
   autoSetupMcp();
   startCdpMonitoring();
+  startPoolTick();
   setWorkspaceInfo(getWorkspaceName(), getWorkspacePath() || "");
+  setSelectAgentHandler((id) => selectAgent(id));
   startLocalServer().then((port) => {
     console.log(`jefr console started: http://127.0.0.1:${port}`);
     const restored = readSelectedAgentId();
@@ -7635,6 +7994,10 @@ function deactivate() {
   }
   if (idleTimer) {
     clearInterval(idleTimer);
+  }
+  if (poolTickTimer) {
+    clearInterval(poolTickTimer);
+    poolTickTimer = void 0;
   }
   stopWorkflow();
   stopLocalServer();
@@ -7716,7 +8079,7 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
         stream: "stdout",
         line: `[jefr] auto-reconnect: agent ${target.slice(0, 8)} dropped \u2014 re-priming its tile`
       });
-      runWorkflow({ reconnect: true, agentId: target });
+      runWorkflow({ reconnect: true, agentId: target, model: poolModel });
     }
   }
   const droppedSet = new Set(dropped);
@@ -7735,7 +8098,8 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
     })),
     selected: selectedAgentId || null,
     autoReconnect,
-    targetAgentCount: TARGET_AGENT_COUNT,
+    targetAgentCount,
+    workflowModel: poolModel,
     cdpConnected: cdpFallback ? lastCdpStatus?.connected ?? false : false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0
@@ -8012,15 +8376,15 @@ var MessengerViewProvider = class {
           break;
         case "refreshAgents": {
           lastAgentListJson = void 0;
-          if (cdpEnabled) {
-            getCdpMonitor().pollNow().then(() => {
-              lastAgentListJson = void 0;
-              pushAgentList();
-            }).catch(() => {
-              pushAgentList();
-            });
-          } else {
+          const ackRefresh = () => {
+            lastAgentListJson = void 0;
             pushAgentList();
+            mainPanel?.webview.postMessage({ type: "agentsRefreshed" });
+          };
+          if (cdpEnabled) {
+            getCdpMonitor().forceReconnect().then(ackRefresh, ackRefresh);
+          } else {
+            ackRefresh();
           }
           break;
         }
@@ -8040,7 +8404,30 @@ var MessengerViewProvider = class {
           autoReconnect = !!msg.enabled;
           lastAgentListJson = void 0;
           pushAgentList();
+          if (autoReconnect)
+            void maintainPool();
           break;
+        case "setTargetAgentCount":
+          if (typeof msg.count === "number" && Number.isFinite(msg.count)) {
+            setTargetAgentCount(msg.count);
+          }
+          break;
+        case "setWorkflowModel":
+          if (typeof msg.model === "string") {
+            setPoolModel(msg.model);
+          }
+          break;
+        case "equalizeTiles": {
+          if (cdpEnabled) {
+            const ok = await getCdpMonitor().equalizeTiles().catch(() => false);
+            postWorkflow({
+              type: "workflowOutput",
+              stream: ok ? "stdout" : "stderr",
+              line: ok ? "[jefr] equalized tile sizes" : "[jefr] could not equalize tiles (no tiling layout?)"
+            });
+          }
+          break;
+        }
         case "reconnectAgent": {
           const aid = typeof msg.agentId === "string" ? msg.agentId : void 0;
           if (aid) {
@@ -8051,20 +8438,20 @@ var MessengerViewProvider = class {
               s.reconnectsSinceConnect++;
               s.lastReconnectAt = Date.now();
             }
-            runWorkflow({ reconnect: true, agentId: aid });
+            runWorkflow({ reconnect: true, agentId: aid, model: poolModel });
           }
           break;
         }
         case "addAgent": {
           runWorkflow({
-            model: typeof msg.model === "string" && msg.model.trim() || WORKFLOW_DEFAULT_MODEL,
+            model: typeof msg.model === "string" && msg.model.trim() || poolModel,
             keepTiles: true
           });
           break;
         }
         case "addAgents": {
-          const model = typeof msg.model === "string" && msg.model.trim() || WORKFLOW_DEFAULT_MODEL;
-          const count = typeof msg.count === "number" && Number.isFinite(msg.count) && msg.count > 0 ? Math.floor(msg.count) : TARGET_AGENT_COUNT;
+          const model = typeof msg.model === "string" && msg.model.trim() || poolModel;
+          const count = typeof msg.count === "number" && Number.isFinite(msg.count) && msg.count > 0 ? Math.floor(msg.count) : targetAgentCount;
           queueAgentAdds(count, model);
           break;
         }
@@ -8152,6 +8539,14 @@ var MessengerViewProvider = class {
             return;
           }
           this.handlePastedImage(msg.dataUrl, msg.caption);
+          resetIdleTimer();
+          triggerCursorChat();
+          break;
+        case "sendPastedImages":
+          if (!this.checkCard()) {
+            return;
+          }
+          this.handlePastedImages(msg.images, msg.caption);
           resetIdleTimer();
           triggerCursorChat();
           break;
@@ -8254,7 +8649,8 @@ var MessengerViewProvider = class {
               tile: typeof msg.tile === "number" && Number.isInteger(msg.tile) ? msg.tile : void 0,
               opusPrompt: msg.opusPrompt,
               maxSecs: msg.maxSecs,
-              enterInterval: msg.enterInterval
+              enterInterval: msg.enterInterval,
+              model: typeof msg.model === "string" && msg.model.trim() || poolModel
             });
           } catch (e) {
             postWorkflow({
@@ -8308,6 +8704,51 @@ var MessengerViewProvider = class {
         caption,
         name: path3.basename(tmpPath),
         path: tmpPath,
+        timestamp: item.timestamp
+      });
+    } catch {
+    }
+  }
+  /** Queue text + multiple pasted images as ONE message. Each data: URL is
+   *  written to a temp file, then all are bundled into a single queue item. */
+  handlePastedImages(images, caption) {
+    try {
+      const list = Array.isArray(images) ? images : [];
+      const decoded = [];
+      for (const img of list) {
+        const match = typeof img?.dataUrl === "string" ? img.dataUrl.match(/^data:image\/(\w+);base64,(.+)$/) : null;
+        if (!match) {
+          continue;
+        }
+        const ext = match[1] === "jpeg" ? "jpg" : match[1];
+        const buf = Buffer.from(match[2], "base64");
+        const tmpPath = path3.join(
+          os3.tmpdir(),
+          "mcp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + "." + ext
+        );
+        fs3.writeFileSync(tmpPath, buf);
+        decoded.push({
+          path: tmpPath,
+          dataUrl: img.dataUrl,
+          name: img.name || path3.basename(tmpPath)
+        });
+      }
+      if (decoded.length === 0) {
+        return;
+      }
+      if (decoded.length === 1) {
+        this.handlePastedImage(decoded[0].dataUrl, caption);
+        return;
+      }
+      const item = sendImagesTo(selectedAgentId, decoded, caption);
+      appendSharedHistory({
+        id: item.id,
+        kind: "image",
+        dataUrl: decoded[0].dataUrl,
+        caption,
+        name: decoded[0].name,
+        path: decoded[0].path,
+        images: decoded.map((d) => ({ path: d.path, dataUrl: d.dataUrl, name: d.name })),
         timestamp: item.timestamp
       });
     } catch {

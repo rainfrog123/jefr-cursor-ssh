@@ -5,11 +5,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { post } from "../vscode";
 import type { DebugEntry, UsageData } from "../types";
-import {
-  DEFAULT_WORKFLOW_MODEL,
-  WORKFLOW_MODELS,
-  type WorkflowModel,
-} from "../workflowModels";
+import { DEFAULT_WORKFLOW_MODEL, WORKFLOW_MODELS } from "../workflowModels";
 import { BrandHeader } from "./Header";
 
 export interface WorkflowLine {
@@ -27,6 +23,9 @@ export function GeneralTab(props: {
   usage: UsageData | null;
   loading: boolean;
   tokenInjected: boolean;
+  /** Shared pool spawn model (also used by Add agent / Fill / keep-N). */
+  workflowModel: string;
+  onModelChange: (model: string) => void;
   workflowRunning: boolean;
   workflowOutput: WorkflowLine[];
   onClearWorkflowOutput: () => void;
@@ -39,6 +38,8 @@ export function GeneralTab(props: {
     usage,
     loading,
     tokenInjected,
+    workflowModel,
+    onModelChange,
     workflowRunning,
     workflowOutput,
     onClearWorkflowOutput,
@@ -49,12 +50,10 @@ export function GeneralTab(props: {
   } = props;
 
   const [token, setToken] = useState("");
-  const [model, setModel] = useState<WorkflowModel>(DEFAULT_WORKFLOW_MODEL);
+  // The model is shared (App owns it, host persists it) so Add agent / Fill /
+  // keep-N all spawn with the same model the dropdown shows.
+  const model = workflowModel || DEFAULT_WORKFLOW_MODEL;
   const [keepTiles, setKeepTiles] = useState(true);
-  const [autoPrompt, setAutoPrompt] = useState("");
-  const [opusPrompt, setOpusPrompt] = useState("");
-  const [maxSecs, setMaxSecs] = useState("6000");
-  const [tile, setTile] = useState("");
   const outRef = useRef<HTMLPreElement | null>(null);
   const dbgRef = useRef<HTMLPreElement | null>(null);
 
@@ -73,25 +72,17 @@ export function GeneralTab(props: {
   }, [workflowOutput]);
 
   const runWorkflow = () => {
-    const n = maxSecs.trim() ? Number(maxSecs.trim()) : undefined;
     post({
       type: "runWorkflow",
-      autoPrompt: autoPrompt.trim() || undefined,
-      opusPrompt: opusPrompt.trim() || undefined,
-      maxSecs: n != null && isFinite(n) ? n : undefined,
       model: model.trim() || undefined,
       keepTiles,
     });
   };
 
   const reconnectWorkflow = () => {
-    const n = maxSecs.trim() ? Number(maxSecs.trim()) : undefined;
-    const t = tile.trim() ? Number(tile.trim()) : undefined;
     post({
       type: "reconnectWorkflow",
-      tile: t != null && Number.isInteger(t) ? t : undefined,
-      opusPrompt: opusPrompt.trim() || undefined,
-      maxSecs: n != null && isFinite(n) ? n : undefined,
+      model: model.trim() || undefined,
     });
   };
 
@@ -116,8 +107,8 @@ export function GeneralTab(props: {
             className="workflow-model-select"
             value={model}
             disabled={workflowRunning}
-            onChange={(e) => setModel(e.target.value as WorkflowModel)}
-            title="Model to switch the spawned tile to after the stand-by prompt"
+            onChange={(e) => onModelChange(e.target.value)}
+            title="Model the pool spawns with — Add agent, Fill and Keep-N all use this"
           >
             {WORKFLOW_MODELS.map((m) => (
               <option key={m} value={m}>
@@ -139,43 +130,7 @@ export function GeneralTab(props: {
           </label>
         </div>
 
-        <textarea
-          className="workflow-input"
-          placeholder="Stand-by prompt (optional)"
-          rows={2}
-          value={autoPrompt}
-          disabled={workflowRunning}
-          onChange={(e) => setAutoPrompt(e.target.value)}
-        />
-        <textarea
-          className="workflow-input"
-          placeholder="MCP prompt (optional)"
-          rows={2}
-          value={opusPrompt}
-          disabled={workflowRunning}
-          onChange={(e) => setOpusPrompt(e.target.value)}
-        />
-
         <div className="workflow-row">
-          <input
-            className="card-input workflow-secs"
-            type="number"
-            min={0}
-            placeholder="Max secs"
-            value={maxSecs}
-            disabled={workflowRunning}
-            onChange={(e) => setMaxSecs(e.target.value)}
-          />
-          <input
-            className="card-input workflow-secs"
-            type="number"
-            min={0}
-            placeholder="Tile # (auto)"
-            value={tile}
-            disabled={workflowRunning}
-            onChange={(e) => setTile(e.target.value)}
-            title="Tile to reconnect (blank = auto-detect the dropped tile)"
-          />
           {workflowRunning ? (
             <button
               className="btn btn-danger btn-small"

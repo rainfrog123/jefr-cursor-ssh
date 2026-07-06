@@ -16,11 +16,15 @@ export function AgentsTab(props: {
   selectedAgentId: string | null;
   autoReconnect: boolean;
   targetAgentCount: number;
+  /** Shared pool spawn model (chosen in the workflow dropdown). */
+  workflowModel: string;
   cdpConnected?: boolean;
   workflowRunning?: boolean;
   connectingAgentId?: string | null;
   connectingSince?: number;
   sharedQueueCount?: number;
+  refreshing?: boolean;
+  onRefresh?: () => void;
   onSelectAgent: (id: string | null) => void;
   onOpenDetail: (id: string | null) => void;
 }): JSX.Element {
@@ -29,11 +33,14 @@ export function AgentsTab(props: {
     selectedAgentId,
     autoReconnect,
     targetAgentCount,
+    workflowModel,
     cdpConnected,
     workflowRunning,
     connectingAgentId,
     connectingSince,
     sharedQueueCount,
+    refreshing,
+    onRefresh,
     onSelectAgent,
     onOpenDetail,
   } = props;
@@ -54,10 +61,17 @@ export function AgentsTab(props: {
   // A tile that's still being primed (the active connecting target) flaps
   // idle ↔ generating while it spins up; exclude it so the count doesn't bounce
   // until it has actually made it into the MCP loop.
-  const connectedCount = agents.filter(
-    (a) => a.connected && a.id !== connectingAgentId,
-  ).length;
-  const slotsLeft = Math.max(0, targetAgentCount - agents.length);
+  // Live MCP loop, plus previously-connected tiles that dropped but still occupy
+  // a pool slot (keep-N will re-prime them in place, not replace).
+  const connectedCount = agents.filter((a) => {
+    if (a.id === connectingAgentId) return false;
+    return (
+      a.connected ||
+      (a.connectCount > 0 && (a.dropped || a.serverDropped))
+    );
+  }).length;
+  const keepCount = agents.length;
+  const slotsLeft = Math.max(0, targetAgentCount - keepCount);
   // Manual "Add agent" is uncapped — you can grow the pool to as many agents as
   // you like. "Fill" only tops up to the auto-baseline (targetAgentCount).
   const canAddOne = !workflowRunning;
@@ -69,18 +83,29 @@ export function AgentsTab(props: {
   // trailing empty slot so you can keep adding past the baseline.
   const slotCount = Math.max(targetAgentCount, agents.length + 1);
 
+  const spawnModel = workflowModel || DEFAULT_WORKFLOW_MODEL;
+
   const addAgent = () => {
-    post({ type: "addAgent", model: DEFAULT_WORKFLOW_MODEL });
+    post({ type: "addAgent", model: spawnModel });
   };
 
   const fillPool = () => {
-    post({ type: "addAgents", model: DEFAULT_WORKFLOW_MODEL });
+    post({ type: "addAgents", model: spawnModel });
   };
 
+  // Pool target (slots + "Keep N connected" baseline). Host clamps to 1–12 and
+  // persists it; we just nudge by ±1.
+  const setTarget = (n: number) => post({ type: "setTargetAgentCount", count: n });
+  const equalizeTiles = () => post({ type: "equalizeTiles" });
+
   // Force the host to re-scan CDP and re-push the full roster, so every tile
-  // actually open in Cursor (including dropped ones) shows up immediately.
+  // actually open in Cursor (including dropped ones) shows up immediately. Prefer
+  // the parent handler (drives the spinner + safety timeout); fall back to a bare
+  // post so the button still works if the prop isn't wired.
   const refresh = () => {
-    post({ type: "refreshAgents" });
+    if (refreshing) return;
+    if (onRefresh) onRefresh();
+    else post({ type: "refreshAgents" });
   };
 
   return (
@@ -117,7 +142,7 @@ export function AgentsTab(props: {
           className="btn btn-primary btn-small"
           disabled={!canAddOne}
           onClick={addAgent}
-          title={`Spawn a new agent tile (${DEFAULT_WORKFLOW_MODEL}). No cap — add as many as you want.`}
+          title={`Spawn a new agent tile (${spawnModel}). No cap — add as many as you want.`}
         >
           + Add agent
         </button>
@@ -125,35 +150,80 @@ export function AgentsTab(props: {
           className="btn btn-primary btn-small"
           disabled={!canFill}
           onClick={fillPool}
-          title={`Fill the pool to ${targetAgentCount} agents in one click (${DEFAULT_WORKFLOW_MODEL}). Spawns are queued and run one at a time.`}
+          title={`Fill the pool to ${targetAgentCount} agents in one click (${spawnModel}). Spawns are queued and run one at a time.`}
         >
           {slotsLeft > 0 ? `+ Add ${slotsLeft}` : `Fill ${targetAgentCount}`}
         </button>
         <button
-          className="btn btn-secondary btn-small"
+          className={"btn btn-secondary btn-small" + (refreshing ? " is-refreshing" : "")}
           onClick={refresh}
-          title="Re-scan Cursor and refresh the roster (pulls in every open tile, including dropped ones)"
+          disabled={refreshing}
+          title="Re-scan Cursor (force-reconnect CDP) and refresh the roster — pulls in every open tile, including dropped ones"
         >
-          ↻ Refresh
+          {refreshing ? "⟳ Refreshing…" : "↻ Refresh"}
         </button>
-        {slotsLeft > 0 && agents.length > 0 && (
-          <span className="agents-slots-hint">
-            {slotsLeft} slot{slotsLeft !== 1 ? "s" : ""} free
+        <button
+          className="btn btn-secondary btn-small"
+          onClick={equalizeTiles}
+          title="Make every agent tile the same width (repeated splits leave them lopsided)."
+        >
+          ⊟ Equalize
+        </button>
+        <div
+          className="agents-target"
+          title="Pool size: how many agent slots to show and keep connected (1–12). One knob drives both."
+        >
+          <span className="agents-target-label">Target</span>
+          <button
+            className="btn btn-secondary btn-small agents-target-btn"
+            disabled={targetAgentCount <= 1}
+            onClick={() => setTarget(targetAgentCount - 1)}
+            aria-label="Decrease pool target"
+          >
+            −
+          </button>
+          <span className="agents-target-num">{targetAgentCount}</span>
+          <button
+            className="btn btn-secondary btn-small agents-target-btn"
+            disabled={targetAgentCount >= 12}
+            onClick={() => setTarget(targetAgentCount + 1)}
+            aria-label="Increase pool target"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      {/* Pool self-heal + free-slot hint on one row so the hint doesn't float
+          above this control when the toolbar wraps. */}
+      <div className="agents-pool-controls">
+        {keepCount > 0 ? (
+          <label
+            className="agents-auto"
+            title={`Keep these ${keepCount} pool agent${keepCount !== 1 ? "s" : ""} MCP-connected: dropped tiles are re-primed in place (same agentId). Does not auto-spawn to the Target — use + Add / Fill for that.`}
+          >
+            <input
+              type="checkbox"
+              checked={autoReconnect}
+              onChange={(e) =>
+                post({ type: "setAutoReconnect", enabled: e.target.checked })
+              }
+            />
+            Keep {keepCount} connected
+          </label>
+        ) : (
+          <span
+            className="agents-auto agents-auto-muted"
+            title="Add an agent to the pool first — keep-connected maintains agents already here, not the Target count."
+          >
+            Keep pool connected
           </span>
         )}
-        <label
-          className="agents-auto"
-          title={`Keep ${targetAgentCount} agents MCP-connected: close any cut-off tile and spawn a replacement, and top up the pool.`}
-        >
-          <input
-            type="checkbox"
-            checked={autoReconnect}
-            onChange={(e) =>
-              post({ type: "setAutoReconnect", enabled: e.target.checked })
-            }
-          />
-          Keep {targetAgentCount} connected
-        </label>
+        {slotsLeft > 0 && keepCount > 0 && (
+          <span className="agents-slots-hint">
+            {slotsLeft} slot{slotsLeft !== 1 ? "s" : ""} free to target
+          </span>
+        )}
       </div>
 
       <div className="agents-slots">

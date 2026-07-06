@@ -6,12 +6,26 @@ import * as os from "os";
 
 export type QueueItemType = "text" | "image" | "file";
 
+/** One image inside a (possibly multi-image) message. */
+export interface QueueImage {
+  path?: string;
+  dataUrl?: string;
+  name?: string;
+}
+
 export interface QueueItem {
   id: string;
   type: QueueItemType;
   content?: string;
   path?: string;
   caption?: string;
+  name?: string;
+  /** Inline image data (data: URL) for the FIRST image — kept for thumbnails
+   *  and backward compatibility with single-image renderers. */
+  dataUrl?: string;
+  /** All images when a single message carries more than one picture. When set,
+   *  `path`/`dataUrl`/`name` mirror `images[0]`. */
+  images?: QueueImage[];
   timestamp: string;
 }
 
@@ -68,6 +82,8 @@ export interface HistoryItem {
   /** Optional inline image data (data: URL) so the panel can show a thumbnail
    *  for externally-originated image sends (e.g. pasted in the Obsidian plugin). */
   dataUrl?: string;
+  /** All images when one message bundles more than one picture. */
+  images?: QueueImage[];
 }
 
 /** One entry in the shared chat history (sends from any front-end + AI replies). */
@@ -79,6 +95,8 @@ export interface SharedHistoryItem {
   name?: string;
   dataUrl?: string;
   path?: string;
+  /** All images when one message bundles more than one picture. */
+  images?: QueueImage[];
   timestamp: string;
 }
 
@@ -704,6 +722,35 @@ export function sendImageTo(
     path: filePath,
     caption,
     dataUrl,
+    timestamp: new Date().toISOString(),
+  };
+  const dir = agentDirFor(agentId);
+  withLockIn(dir, () => {
+    const queue = readJsonArrayAt(path.join(dir, "queue.json"));
+    queue.push(item);
+    robustWriteFile(path.join(dir, "queue.json"), JSON.stringify(queue, null, 2));
+  });
+  return item;
+}
+
+/** Queue text + one OR MORE images as a SINGLE message (one queue item). The
+ *  first image's path/dataUrl/name mirror onto the item's top-level fields so
+ *  single-image renderers still show a thumbnail; the full set lives in
+ *  `images`. The MCP server expands this one item into text + N image parts. */
+export function sendImagesTo(
+  agentId: string | undefined,
+  images: QueueImage[],
+  caption?: string
+): QueueItem {
+  const first = images[0] || {};
+  const item: QueueItem = {
+    id: makeId(),
+    type: "image",
+    path: first.path,
+    dataUrl: first.dataUrl,
+    name: first.name,
+    caption,
+    images,
     timestamp: new Date().toISOString(),
   };
   const dir = agentDirFor(agentId);

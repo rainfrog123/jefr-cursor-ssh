@@ -13,6 +13,13 @@
 /* Data shapes (mirrors of the JSON files used for file-system IPC)    */
 /* ------------------------------------------------------------------ */
 
+/** One image inside a (possibly multi-image) message. */
+export interface QueueImage {
+  path?: string;
+  dataUrl?: string;
+  name?: string;
+}
+
 /** One pending item the user queued for the agent. */
 export interface QueueItem {
   id: string;
@@ -28,6 +35,9 @@ export interface QueueItem {
   caption?: string;
   /** Inline image data (data: URL) so the queue can show a thumbnail. */
   dataUrl?: string;
+  /** All images when one message bundles more than one picture. When set,
+   *  `path`/`dataUrl`/`name` mirror `images[0]`. */
+  images?: QueueImage[];
   /** ISO timestamp. */
   timestamp: string;
 }
@@ -92,6 +102,8 @@ export interface HistoryItem {
   path?: string;
   name?: string;
   dataUrl?: string;
+  /** All images when one message bundles more than one picture. */
+  images?: QueueImage[];
   time?: string;
 }
 
@@ -173,6 +185,7 @@ export type InboundMessage =
   | { type: "showQuestion"; data: QuestionData }
   | { type: "clearQuestion" }
   | { type: "showReply"; data: ReplyData }
+  | { type: "agentsRefreshed" }
   | { type: "historyAppend"; item: HistoryItem; agentId?: string }
   | { type: "attachmentAdded"; item: Attachment }
   | { type: "cardState"; data: { active: boolean } }
@@ -191,6 +204,9 @@ export type InboundMessage =
       autoReconnect: boolean;
       /** Max agents the UI manages (slot count). */
       targetAgentCount?: number;
+      /** The model the pool spawns with — used by Add agent / Fill / keep-N and
+       *  reflected in the workflow dropdown. Persisted host-side. */
+      workflowModel?: string;
       /** True when CDP real-time monitoring is active. */
       cdpConnected?: boolean;
       /** The single agent a running workflow is currently spawning / re-priming.
@@ -214,6 +230,11 @@ export type OutboundMessage =
   | { type: "pickAttachment" }
   | { type: "sendImage"; caption: string }
   | { type: "sendPastedImage"; dataUrl: string; caption: string }
+  | {
+      type: "sendPastedImages";
+      images: Array<{ dataUrl: string; name?: string }>;
+      caption: string;
+    }
   | { type: "sendFile" }
   | { type: "resendFile"; path: string }
   | { type: "submitAnswer"; data: AnswerData }
@@ -247,6 +268,7 @@ export type OutboundMessage =
       opusPrompt?: string;
       maxSecs?: number;
       enterInterval?: number;
+      model?: string;
     }
   | { type: "stopWorkflow" }
   | { type: "getWorkflowState" }
@@ -254,6 +276,9 @@ export type OutboundMessage =
   | { type: "clearDebugLog" }
   | { type: "selectAgent"; agentId?: string }
   | { type: "setAutoReconnect"; enabled: boolean }
+  | { type: "setTargetAgentCount"; count: number }
+  | { type: "setWorkflowModel"; model: string }
+  | { type: "equalizeTiles" }
   | { type: "reconnectAgent"; agentId: string }
   | { type: "addAgent"; model?: string }
   | { type: "addAgents"; count?: number; model?: string }

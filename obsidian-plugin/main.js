@@ -238,6 +238,10 @@ class JefrView extends ItemView {
     this.headerEl = header;
     const brand = header.createDiv({ cls: "jefr-brand" });
     brand.createSpan({ cls: "jefr-logo", text: "jefr" });
+    // The agent route picker now lives down with the composer (see below) so it's
+    // always next to where you type. These just hold the picker state.
+    this.liveAgents = [];
+    this.selectedAgentId = null;
     this.statusPill = brand.createSpan({ cls: "jefr-status jefr-status-offline", text: "Offline" });
     // Distinct from the connection pill: this reflects whether a Cursor agent is
     // actually running the perpetual loop (heartbeat), not just that the socket
@@ -249,9 +253,7 @@ class JefrView extends ItemView {
     const headerRight = header.createDiv({ cls: "jefr-header-right" });
     this.queueBadge = headerRight.createSpan({ cls: "jefr-queue-badge", text: "" });
     this.queueBadge.onclick = () => this.toggleQueuePanel();
-    this.minimizeBtn = headerRight.createEl("button", { cls: "jefr-icon-btn", attr: { "aria-label": "Toggle compact mode" } });
-    this.minimizeBtn.onclick = () => this.toggleMinimized();
-    this.reconnectBtn = headerRight.createEl("button", { cls: "jefr-icon-btn", attr: { "aria-label": "Reconnect" } });
+    this.reconnectBtn = headerRight.createEl("button", { cls: "jefr-icon-btn jefr-reconnect-btn", attr: { "aria-label": "Reconnect" } });
     setIcon(this.reconnectBtn, "refresh-cw");
     this.reconnectBtn.onclick = () => {
       this.teardownSocket();
@@ -284,6 +286,34 @@ class JefrView extends ItemView {
     // Composer (inside the scroll region so the header can scroll away above it)
     const composer = scroll.createDiv({ cls: "jefr-composer" });
     this.composerEl = composer;
+    // Agent route picker pinned with the composer: see/switch which agent your
+    // message routes to right where you type. Click it (or use Ctrl/Cmd+PageUp/
+    // PageDown while focused in the box) to change the target.
+    const routeBar = composer.createDiv({ cls: "jefr-composer-route" });
+    this.routeLabel = routeBar.createSpan({
+      cls: "jefr-route jefr-route-idle",
+      attr: { role: "button", tabindex: "0" },
+    });
+    this.routeLabel.setAttr("title", "Choose which agent this message routes to");
+    this.routeNameEl = this.routeLabel.createSpan({ cls: "jefr-route-name", text: "" });
+    this.routeLabel.createSpan({ cls: "jefr-route-caret", text: "▾" });
+    this.routeLabel.onclick = (e) => {
+      e.stopPropagation();
+      this.toggleAgentMenu();
+    };
+    this.routeLabel.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.toggleAgentMenu();
+      }
+    });
+    // Dropdown of live agents, opening upward from the composer.
+    this.agentMenu = routeBar.createDiv({ cls: "jefr-agent-menu" });
+    // Expand/compact toggle sits on this row (right side), so the redundant "jefr"
+    // header can be hidden in compact mode — Obsidian already labels the pane.
+    this.minimizeBtn = routeBar.createEl("button", { cls: "jefr-icon-btn jefr-minimize-btn", attr: { "aria-label": "Toggle compact mode" } });
+    this.minimizeBtn.onclick = () => this.toggleMinimized();
+    this.updateRouteLabel();
     this.attachBar = composer.createDiv({ cls: "jefr-attachbar" });
     this.input = composer.createEl("textarea", {
       cls: "jefr-input",
@@ -384,6 +414,35 @@ class JefrView extends ItemView {
       true
     );
 
+    // Ctrl/Cmd + PageUp / PageDown switches the active ("talking-to") agent while
+    // the composer is focused. A window capture-phase keydown (fires before any
+    // document/element listener, so it can beat Obsidian's default tab hotkey),
+    // gated to when the composer has focus. It does NOT push a keymap scope, so it
+    // can't affect textarea focus (which the earlier scope approach did).
+    this.registerDomEvent(
+      window,
+      "keydown",
+      (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+        if (e.key !== "PageUp" && e.key !== "PageDown") return;
+        if (!this.isComposerFocused()) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.cycleAgent(e.key === "PageDown" ? 1 : -1);
+      },
+      true
+    );
+
+    // Dock the header together with the composer at the bottom, below the
+    // scrollable conversation, so the brand/status/controls and the input read as
+    // one integrated block. (The elements were built inside `scroll`; move them.)
+    const dock = root.createDiv({ cls: "jefr-dock" });
+    dock.appendChild(this.headerEl);
+    // Keep the Q&A card in the dock (above the composer) so ask_question is still
+    // shown in compact mode, where the scrollable conversation is hidden.
+    dock.appendChild(this.questionEl);
+    dock.appendChild(this.composerEl);
+
     this.applyMinimized();
     this.updateSendState();
   }
@@ -426,6 +485,137 @@ class JefrView extends ItemView {
     this.plugin.settings.minimized = !this.plugin.settings.minimized;
     await this.plugin.saveData(this.plugin.settings);
     this.applyMinimized();
+  }
+
+  /* ------------------------- Agent picker ------------------------ */
+
+  /** Update the compact route label text/title from the current selection. */
+  updateRouteLabel() {
+    if (!this.routeNameEl) return;
+    const sid = this.selectedAgentId ? String(this.selectedAgentId) : "";
+    const shortId = sid ? sid.slice(0, 8) : "";
+    this.routeNameEl.setText(shortId || "All agents");
+    if (this.routeLabel) {
+      this.routeLabel.setAttr(
+        "title",
+        sid
+          ? `Routes to agent ${sid} — click to change`
+          : "Routes to all agents (shared queue) — click to change",
+      );
+    }
+  }
+
+  toggleAgentMenu() {
+    if (!this.agentMenu) return;
+    if (this.agentMenu.hasClass("jefr-open")) this.closeAgentMenu();
+    else this.openAgentMenu();
+  }
+
+  /** Stable signature of what the menu shows (ids + states + selection), so we
+   *  can skip rebuilding it when nothing meaningful changed. Order-independent. */
+  agentMenuSignature() {
+    const parts = (Array.isArray(this.liveAgents) ? this.liveAgents : [])
+      .map((a) => `${a.id}:${a.state}`)
+      .sort();
+    return `${this.selectedAgentId || ""}|${parts.join(",")}`;
+  }
+
+  openAgentMenu() {
+    if (!this.agentMenu) return;
+    this._agentMenuSig = this.agentMenuSignature();
+    this.renderAgentMenu();
+    this.agentMenu.addClass("jefr-open");
+    // Dismiss on any outside click.
+    this._agentMenuOutside = (e) => {
+      const t = e.target;
+      if (
+        this.agentMenu &&
+        !this.agentMenu.contains(t) &&
+        this.routeLabel &&
+        !this.routeLabel.contains(t)
+      ) {
+        this.closeAgentMenu();
+      }
+    };
+    window.setTimeout(
+      () => document.addEventListener("mousedown", this._agentMenuOutside, true),
+      0,
+    );
+  }
+
+  closeAgentMenu() {
+    if (this.agentMenu) this.agentMenu.removeClass("jefr-open");
+    if (this._agentMenuOutside) {
+      document.removeEventListener("mousedown", this._agentMenuOutside, true);
+      this._agentMenuOutside = null;
+    }
+  }
+
+  renderAgentMenu() {
+    if (!this.agentMenu) return;
+    this.agentMenu.empty();
+    // Stable display order (by id) so rows never bump as heartbeats update.
+    const agents = (Array.isArray(this.liveAgents) ? this.liveAgents : [])
+      .slice()
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const sel = this.selectedAgentId ? String(this.selectedAgentId) : "";
+
+    // "All agents (shared)" — routes to the shared queue (no specific target).
+    const allRow = this.agentMenu.createDiv({
+      cls: "jefr-agent-opt" + (!sel ? " jefr-agent-opt-active" : ""),
+    });
+    allRow.createSpan({ cls: "jefr-agent-opt-dot" });
+    allRow.createSpan({ cls: "jefr-agent-opt-name", text: "All agents (shared)" });
+    allRow.onclick = () => this.selectAgentRemote(null);
+
+    if (!agents.length) {
+      this.agentMenu.createDiv({ cls: "jefr-agent-empty", text: "No live agents" });
+    }
+    for (const a of agents) {
+      const id = a && a.id ? String(a.id) : "";
+      if (!id) continue;
+      const row = this.agentMenu.createDiv({
+        cls: "jefr-agent-opt" + (id === sel ? " jefr-agent-opt-active" : ""),
+      });
+      const busy = a.state === "working";
+      row.createSpan({ cls: "jefr-agent-opt-dot " + (busy ? "is-busy" : "is-listening") });
+      row.createSpan({ cls: "jefr-agent-opt-name jefr-agent-opt-id", text: id.slice(0, 8) });
+      const meta = [busy ? "busy" : "listening"];
+      if (typeof a.queueCount === "number" && a.queueCount > 0) {
+        meta.push(`${a.queueCount} queued`);
+      }
+      row.createSpan({ cls: "jefr-agent-opt-meta", text: meta.join(" · ") });
+      row.setAttr("title", id);
+      row.onclick = () => this.selectAgentRemote(id);
+    }
+  }
+
+  selectAgentRemote(id) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "selectAgent", agentId: id || null }));
+    }
+    // Optimistic update; the bridge will re-broadcast the authoritative state.
+    this.selectedAgentId = id || null;
+    this.updateRouteLabel();
+    this.closeAgentMenu();
+  }
+
+  /** Cycle the routed ("talking-to") agent by `dir` (+1 next, -1 prev) through the
+   *  same order the picker shows — ["All agents (shared)", ...live agents by id] —
+   *  wrapping around. Bound to Ctrl/Cmd+PageDown / PageUp. */
+  cycleAgent(dir) {
+    const ids = (Array.isArray(this.liveAgents) ? this.liveAgents : [])
+      .map((a) => (a && a.id ? String(a.id) : ""))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    const order = [null, ...ids]; // null = "All agents (shared)"
+    if (order.length <= 1) return; // nothing to switch between
+    const cur = this.selectedAgentId ? String(this.selectedAgentId) : null;
+    let idx = order.indexOf(cur);
+    if (idx < 0) idx = 0;
+    const next = order[(idx + dir + order.length) % order.length];
+    // The route label by the composer reflects the change — no toast needed.
+    this.selectAgentRemote(next);
   }
 
   renderEmptyState() {
@@ -663,6 +853,13 @@ class JefrView extends ItemView {
       this.agentPill.setText("No agent");
       this.agentPill.setAttr("title", "No agent is running the loop — messages queue until one calls check_messages");
     }
+    // Mirror liveness onto the compact route label's dot.
+    if (this.routeLabel) {
+      this.routeLabel.removeClass("jefr-route-ready", "jefr-route-busy", "jefr-route-idle");
+      if (alive && agent.state === "working") this.routeLabel.addClass("jefr-route-busy");
+      else if (alive) this.routeLabel.addClass("jefr-route-ready");
+      else this.routeLabel.addClass("jefr-route-idle");
+    }
     this.updateSendState();
   }
 
@@ -708,8 +905,9 @@ class JefrView extends ItemView {
       this.renderedIds.add(it.id);
       if (it.kind === "reply") {
         this.addReplyBubble(it.text || "");
-      } else if (it.kind === "image" && it.dataUrl) {
-        this.addImageBubble(it.dataUrl, it.name, it.caption);
+      } else if (it.kind === "image" && ((it.images && it.images.length) || it.dataUrl)) {
+        const imgs = it.images && it.images.length ? it.images : [{ dataUrl: it.dataUrl, name: it.name }];
+        this.addImageBubble(imgs, it.caption);
       } else if (it.kind === "image" || it.kind === "file") {
         this.addUserBubble(it.caption || it.name || it.text || "[" + it.kind + "]");
       } else {
@@ -718,11 +916,21 @@ class JefrView extends ItemView {
     }
   }
 
-  addImageBubble(dataUrl, name, caption) {
+  addImageBubble(images, caption) {
     this.ensureMessagesReady();
+    // Backward compatible: accept a single (dataUrl, name, caption) call too.
+    let imgs = images;
+    if (typeof images === "string") {
+      imgs = [{ dataUrl: images, name: caption }];
+      caption = arguments[2];
+    }
     const row = this.messagesEl.createDiv({ cls: "jefr-row jefr-row-user" });
     const bubble = row.createDiv({ cls: "jefr-bubble jefr-bubble-user jefr-bubble-image" });
-    bubble.createEl("img", { cls: "jefr-msg-img", attr: { src: dataUrl, alt: name || "image" } });
+    for (const im of imgs || []) {
+      if (im && im.dataUrl) {
+        bubble.createEl("img", { cls: "jefr-msg-img", attr: { src: im.dataUrl, alt: im.name || "image" } });
+      }
+    }
     if (caption) bubble.createDiv({ cls: "jefr-bubble-text", text: caption });
     bubble.createDiv({ cls: "jefr-bubble-time", text: nowTime() });
     this.trimHistory();
@@ -757,10 +965,12 @@ class JefrView extends ItemView {
     }
     try {
       if (attachments.length) {
-        // Combine text + image(s) into ONE message: send the text as the caption
-        // on the first image so the agent receives it as a single item.
-        attachments.forEach((a, i) => {
-          this.queueSend({ type: "sendImage", dataUrl: a.dataUrl, caption: i === 0 ? text : "" });
+        // Combine text + all image(s) into ONE message (a single queue item) so
+        // the agent receives them together as one combined bubble.
+        this.queueSend({
+          type: "sendImages",
+          dataUrls: attachments.map((a) => a.dataUrl),
+          caption: text,
         });
       } else if (text) {
         this.queueSend({ type: "sendText", text });
@@ -916,6 +1126,23 @@ class JefrView extends ItemView {
       this.workspaceLine.setAttr("title", p);
     }
 
+    // Compact agent picker: which agent this message routes to. The bridge sends
+    // the live-agent list (`agents`) + current `selectedAgentId` (mirrors the
+    // panel's Agent Picker). Clicking the label opens a dropdown to switch.
+    this.liveAgents = Array.isArray(d.agents) ? d.agents : [];
+    this.selectedAgentId = d.selectedAgentId || null;
+    this.updateRouteLabel();
+    // Only rebuild the open menu when the agent set / states / selection actually
+    // change — otherwise the 0.5s heartbeat push would re-render (and the
+    // ts-sorted order would reshuffle) every tick, making it flicker/bump.
+    if (this.agentMenu && this.agentMenu.hasClass("jefr-open")) {
+      const sig = this.agentMenuSignature();
+      if (sig !== this._agentMenuSig) {
+        this._agentMenuSig = sig;
+        this.renderAgentMenu();
+      }
+    }
+
     // Queue badge + remember the queued items for the toggle panel.
     this.lastQueue = Array.isArray(d.queue) ? d.queue : [];
     const count = typeof d.queueCount === "number" ? d.queueCount : this.lastQueue.length;
@@ -986,7 +1213,11 @@ class JefrView extends ItemView {
       const row = this.queuePanel.createDiv({ cls: "jefr-queue-row" });
       const type = it.type || "text";
       let preview;
-      if (type === "image") preview = it.caption ? "[Image] " + it.caption : "[Image]";
+      if (type === "image") {
+        const n = it.images && it.images.length ? it.images.length : 1;
+        const label = n > 1 ? "[" + n + " images]" : "[Image]";
+        preview = it.caption ? label + " " + it.caption : label;
+      }
       else if (type === "file") preview = "[File] " + (it.path ? it.path.split(/[\\/]/).pop() : "");
       else preview = (it.content || "").replace(/\s+/g, " ").trim();
       row.createSpan({ cls: "jefr-queue-type jefr-qt-" + type, text: type });

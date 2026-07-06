@@ -406,21 +406,56 @@ def prepare(ws):
 def split(ws):
     """Always start with a fresh trusted Ctrl+D split; return the NEW tile's index.
 
-    The new tile mounts at the end of the tile list, so its index is the last one.
-    We detect it dynamically rather than assuming index 1, which keeps the workflow
-    robust no matter how many tiles already exist.
+    Cursor's tiling is a BINARY SPLIT TREE: Ctrl+D inserts the new pane ADJACENT
+    to the focused tile, so the new tile is NOT necessarily the last one — with
+    several tiles it can mount in the middle. The old "new tile = last index"
+    assumption therefore drove the WRONG tile and left the real new one empty and
+    undriven. We instead TAG every existing tile before the split and pick out the
+    tile that lacks the tag afterwards, so we always drive the actual new tile no
+    matter where it lands in the tree.
     """
     before = tile_count(ws)
+    eval_js(
+        ws,
+        "(()=>{const ts=[...document.querySelectorAll("
+        "'.glass-agent-conversation-tiling__tile')];"
+        "ts.forEach(t=>t.setAttribute('data-jefr-pre','1'));return ts.length;})()",
+        await_promise=False,
+    )
     print(f"split: Ctrl+D to open a new tile (tiles before={before})")
     cdp.send_chord(ws, "Control+d", focus_eval=tile_focus_eval(-1))
 
-    new_idx = max(0, before)  # fallback if count never grows (single-pane -> tile 1)
+    find_new = (
+        "(()=>{const ts=[...document.querySelectorAll("
+        "'.glass-agent-conversation-tiling__tile')];"
+        "const u=[];ts.forEach((t,i)=>{if(!t.hasAttribute('data-jefr-pre'))u.push(i);});"
+        "return JSON.stringify({n:ts.length,unmarked:u});})()"
+    )
+    new_idx = None
     for _ in range(40):
         time.sleep(0.15)
-        count = tile_count(ws)
-        if count > before:
-            new_idx = count - 1
+        info = eval_js(ws, find_new, await_promise=False)
+        try:
+            data = json.loads(info) if isinstance(info, str) else (info or {})
+        except Exception:
+            data = {}
+        unmarked = data.get("unmarked") or []
+        if data.get("n", 0) > before and unmarked:
+            # Exactly one unmarked tile = the freshly-split pane. If a re-render
+            # stripped our markers, several read as unmarked — prefer the LAST,
+            # which matches the old behaviour rather than guessing worse.
+            new_idx = unmarked[-1]
             break
+    # Always clean up our markers, success or not.
+    eval_js(
+        ws,
+        "(()=>{document.querySelectorAll("
+        "'.glass-agent-conversation-tiling__tile[data-jefr-pre]')"
+        ".forEach(t=>t.removeAttribute('data-jefr-pre'));return true;})()",
+        await_promise=False,
+    )
+    if new_idx is None:
+        new_idx = max(0, tile_count(ws) - 1)  # fallback: old last-index behaviour
     snap(ws, "after-split")
     print(f"split: new tile index = {new_idx} (tiles now={tile_count(ws)})")
     return new_idx
@@ -657,8 +692,9 @@ def main():
                          "one — required to keep multiple agents online at once "
                          "(repeated spawns accumulate instead of replacing).")
     ap.add_argument("--reconnect", action="store_true",
-                    help="Reconnect mode: skip split/Auto/GPT; detect a dropped "
-                         "('worked') tile and re-prime its MCP loop in place")
+                    help="Reconnect mode: detect a dropped ('worked') tile, run "
+                         "the Auto stand-by phase, then re-prime its MCP loop "
+                         "in place (no Ctrl+D split)")
     ap.add_argument("--tile", type=int, default=None,
                     help="Target tile index for --reconnect (default: auto-detect "
                          "the dropped tile)")
@@ -696,9 +732,15 @@ def main():
             idx = detect_dropped_tile(ws)
         if idx is None:
             fail("no dropped tile detected (nothing to reconnect)")
+        # Same Auto stand-by + model-select priming as spawn, but in place on the
+        # dropped tile — without this the MCP Enter-hold often fails to latch.
+        auto = args.prompt or auto_prompt()
+        print(f"# reconnect auto prompt: {auto!r}")
+        idx, agent_id = run_phase(ws, auto, idx, args.model)
+        print(f"[t+{elapsed():.1f}s] reconnect auto phase + model select done")
         # Re-priming must re-assert the agent's id so its loop rejoins its own
         # queue (the id == this tile's real agentId).
-        agent_id = args.agent_id or agent_id_for(ws, idx)
+        agent_id = args.agent_id or agent_id or agent_id_for(ws, idx)
         rtext = mcp_prompt_with_id(type_text, agent_id)
         print(f"# reconnect mode; agent_id: {agent_id}; mcp prompt: {rtext!r}")
         if not reconnect(ws, idx, rtext, args.enter_interval, args.max_secs, agent_id=agent_id):

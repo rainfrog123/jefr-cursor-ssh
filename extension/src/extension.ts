@@ -33,6 +33,7 @@ import {
   getAgentStatusFor,
   sendTextTo,
   sendImageTo,
+  sendImagesTo,
   sendFileTo,
   deleteQueueItemFor,
   clearQueueFor,
@@ -71,6 +72,7 @@ import {
   stopLocalServer,
   setWorkspaceInfo,
   setSelectedAgentId,
+  setSelectAgentHandler,
   getServerPort,
   getConnectedClients,
 } from "./local-server";
@@ -111,7 +113,12 @@ let lastAgentListJson: string | undefined;
 // Auto-reconnect: when a previously-connected agent's heartbeat goes stale, the
 // extension re-primes its tile via the CDP workflow. Off by default; togglable.
 let autoReconnect = false;
-const RECONNECT_DEBOUNCE_MS = 45_000;
+const RECONNECT_DEBOUNCE_MS = 30_000;
+/** How long a tile must stay continuously cut off before the self-healing pool
+ *  closes it and spawns a replacement. A drop must be CONFIRMED for this long —
+ *  not a momentary blip — so a healthy-but-bursty loop is never needlessly
+ *  recycled. Drives `maintainPool` via `getDroppedAgents(CONFIRM_DROP_MS)`. */
+const CONFIRM_DROP_MS = 30_000;
 /** Forget disconnected agents after this long without a heartbeat — they're
  *  tombstones from closed tabs / past sessions and shouldn't linger or be
  *  reconnected. */
@@ -189,6 +196,13 @@ function startCdpMonitoring(): void {
       } else if (t.type === "new_agent") dlog(`agent ${who} appeared (${t.to})`);
     }
 
+    // Always-on: the "Payment failed … Manage Billing" banner has no native
+    // dismiss, so hide it on sight (the tile itself is left open). Re-applied on
+    // every status change; the self-heal tick re-applies it on its poll too.
+    if (status.tiles.some((t) => t.billingBlocked)) {
+      hideBillingBannersNow();
+    }
+
     // Self-healing pool: close cut-off tiles and top up to the target.
     if (autoReconnect && !workflowProc && !healingTile) {
       void maintainPool();
@@ -238,7 +252,8 @@ function pushAgentListFromCdp(): void {
     agents: agents.map((a) => ({ ...a, connectMs: agentConnectMs.get(a.id) })),
     selected: selectedAgentId || null,
     autoReconnect,
-    targetAgentCount: TARGET_AGENT_COUNT,
+    targetAgentCount,
+    workflowModel: poolModel,
     cdpConnected: lastCdpStatus?.connected ?? false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0,
@@ -411,13 +426,52 @@ function resolveWorkflowScript(): string | null {
 
 /** Default model for workflow spawn (--model when the UI omits one). */
 const WORKFLOW_DEFAULT_MODEL = "Opus 4.8 1M Extra High Fast";
-/** Target number of agents to keep online (UI slot count). */
-const TARGET_AGENT_COUNT = 5;
+/** The model the whole pool spawns with — Add agent, Fill, AND keep-N respawns
+ *  all use it. Set from the workflow dropdown, persisted, surfaced to the UI so
+ *  both tabs stay in sync. Falls back to WORKFLOW_DEFAULT_MODEL. */
+let poolModel: string = WORKFLOW_DEFAULT_MODEL;
+const WORKFLOW_MODEL_KEY = "jefr.workflowModel";
+
+function setPoolModel(next: string): void {
+  const m = (next && next.trim()) || WORKFLOW_DEFAULT_MODEL;
+  if (m === poolModel) return;
+  poolModel = m;
+  void extensionContext?.globalState.update(WORKFLOW_MODEL_KEY, m);
+  dlog(`pool model set to ${m}`);
+  lastAgentListJson = undefined; // force a re-push so both tabs reflect it
+  pushAgentList();
+}
+/** Target number of agents to keep online — the slot count AND the "Keep N
+ *  connected" baseline (one knob drives both). Default 5, user-adjustable from
+ *  the Agents tab and persisted in globalState. Clamped to a sane range. */
+const DEFAULT_TARGET_AGENT_COUNT = 5;
+const MIN_TARGET_AGENT_COUNT = 1;
+const MAX_TARGET_AGENT_COUNT = 12;
+let targetAgentCount = DEFAULT_TARGET_AGENT_COUNT;
+/** Set once in activate() so the target can be persisted across sessions. */
+let extensionContext: vscode.ExtensionContext | undefined;
+const TARGET_AGENT_COUNT_KEY = "jefr.targetAgentCount";
+
+/** Apply a new target (clamped), persist it, and re-push the roster so the UI
+ *  (slots + Fill button) updates immediately. Target is separate from keep-N,
+ *  which tracks agents already in the pool. */
+function setTargetAgentCount(next: number): void {
+  const clamped = Math.max(
+    MIN_TARGET_AGENT_COUNT,
+    Math.min(MAX_TARGET_AGENT_COUNT, Math.floor(next)),
+  );
+  if (clamped === targetAgentCount) return;
+  targetAgentCount = clamped;
+  void extensionContext?.globalState.update(TARGET_AGENT_COUNT_KEY, clamped);
+  dlog(`target agent count set to ${clamped}`);
+  lastAgentListJson = undefined; // force a re-push with the new target
+  pushAgentList();
+}
 
 // "Fill pool" queue: only one workflow can run at a time, so the one-button
 // "add up to 5 agents" feature schedules spawns sequentially. pendingAgentAdds
 // is the number of spawn runs still to fire; each completed workflow triggers
-// the next one until the roster reaches TARGET_AGENT_COUNT.
+// the next one until the roster reaches targetAgentCount.
 let pendingAgentAdds = 0;
 let pendingAgentModel = WORKFLOW_DEFAULT_MODEL;
 
@@ -426,13 +480,13 @@ function queueAgentAdds(count: number, model: string): void {
   pendingAgentModel = (model && model.trim()) || WORKFLOW_DEFAULT_MODEL;
   const current = tileStateManager.toAgentViews().length;
   // Cap the queue so current + in-flight/queued spawns never exceed the target.
-  const room = Math.max(0, TARGET_AGENT_COUNT - current - pendingAgentAdds);
+  const room = Math.max(0, targetAgentCount - current - pendingAgentAdds);
   const toAdd = Math.max(0, Math.min(count, room));
   if (toAdd <= 0) {
     postWorkflow({
       type: "workflowOutput",
       stream: "stderr",
-      line: `[jefr] Pool already full or filling (target ${TARGET_AGENT_COUNT}).`,
+      line: `[jefr] Pool already full or filling (target ${targetAgentCount}).`,
     });
     return;
   }
@@ -440,7 +494,7 @@ function queueAgentAdds(count: number, model: string): void {
   postWorkflow({
     type: "workflowOutput",
     stream: "stdout",
-    line: `[jefr] Filling pool: queued ${toAdd} agent${toAdd !== 1 ? "s" : ""} (target ${TARGET_AGENT_COUNT}).`,
+    line: `[jefr] Filling pool: queued ${toAdd} agent${toAdd !== 1 ? "s" : ""} (target ${targetAgentCount}).`,
   });
   processAgentAddQueue();
 }
@@ -455,7 +509,7 @@ function processAgentAddQueue(): void {
     return;
   }
   const current = tileStateManager.toAgentViews().length;
-  if (current >= TARGET_AGENT_COUNT) {
+  if (current >= targetAgentCount) {
     pendingAgentAdds = 0;
     return;
   }
@@ -464,18 +518,55 @@ function processAgentAddQueue(): void {
 }
 
 // ── Self-healing pool ("Keep N connected") ──────────────────────────────────
-// When enabled, the pool keeps TARGET_AGENT_COUNT agents MCP-connected. A tile
-// that cut out mid-loop (was connected, now idle with a "Worked for…" stamp) is
-// CLOSED and a fresh one is spawned to replace it — rather than re-primed in
-// place. Any shortfall below the target is topped up with new spawns.
+// When enabled, N = agents already in the pool (not the Target knob). The pool
+// re-primes dropped tiles in place; it does NOT auto-spawn up to Target — use
+// Fill / + Add for that. Never-connected idle tiles may still be closed/replaced.
 let healingTile = false;
+/** Hide (not close) the "Payment failed … Manage Billing" banner. It has no native
+ *  dismiss, so we set display:none on it. The tile stays open — only the banner is
+ *  removed from view. Poll-driven: re-applied on every status change and on the
+ *  self-heal tick (no in-page observer), so a React re-render that brings the banner
+ *  back is undone on the next poll. Idempotent and cheap. */
+function hideBillingBannersNow(): void {
+  if (!cdpEnabled) return;
+  void getCdpMonitor()
+    .hideBillingBanners()
+    .then((n) => {
+      if (n > 0) dlog(`hid ${n} payment-failed banner(s)`);
+    })
+    .catch(() => {});
+}
+
+/** Periodic self-heal tick. The CDP monitor only emits a status event when the
+ *  tile state CHANGES, so a tile that quietly sits cut off would never re-trigger
+ *  maintainPool — meaning the 30s CONFIRM window could never elapse on its own.
+ *  This interval re-runs the pool check on a fixed cadence while "Keep N
+ *  connected" is on, so a confirmed drop is acted on ~30s after it happened and
+ *  any shortfall below the target is topped up even when nothing else changes. */
+let poolTickTimer: ReturnType<typeof setInterval> | undefined;
+const POOL_TICK_MS = 5_000;
+
+function startPoolTick(): void {
+  if (poolTickTimer) return;
+  poolTickTimer = setInterval(() => {
+    if (!cdpEnabled || !(lastCdpStatus?.connected ?? false)) return;
+    // Always-on: re-assert the billing-banner hide on each tick (cheap, idempotent;
+    // this poll is what keeps it hidden now that there's no in-page observer).
+    if ((lastCdpStatus?.tiles || []).some((t) => t.billingBlocked)) {
+      hideBillingBannersNow();
+    }
+    if (workflowProc || healingTile) return;
+    if (!autoReconnect || pendingAgentAdds > 0) return;
+    void maintainPool();
+  }, POOL_TICK_MS);
+}
 
 /** Spawn fresh agents until the roster reaches the target (one at a time). */
 function topUpPool(): void {
   if (workflowProc || pendingAgentAdds > 0 || healingTile) return;
   const tiles = tileStateManager.toAgentViews().length;
-  if (tiles < TARGET_AGENT_COUNT) {
-    queueAgentAdds(TARGET_AGENT_COUNT - tiles, WORKFLOW_DEFAULT_MODEL);
+  if (tiles < targetAgentCount) {
+    queueAgentAdds(targetAgentCount - tiles, poolModel);
   }
 }
 
@@ -538,36 +629,43 @@ async function maintainPool(): Promise<void> {
     return;
   }
 
-  const dropped = tileStateManager.getDroppedAgents();
+  // CONFIRM window: act on any tile that has stayed NON-LIVE (not mcp_connected /
+  // working) for ≥30s — a clean cut-off, a server drop, OR a plain "down" tile —
+  // so the pool keeps N agents actually connected/working. A brief blip never
+  // triggers it (30s confirm), and the manual "Close dropped" button still acts
+  // immediately on the cut-off subset.
+  const dropped = tileStateManager.getAgentsNeedingHeal(CONFIRM_DROP_MS);
   if (dropped.length > 0) {
-    // Re-prime IN PLACE when messages are stranded: closing the tile runs
-    // forgetAgentDir(), which deletes the on-disk queue and loses those
-    // messages. A re-prime keeps the same tile/agentId, so the queue drains once
-    // the loop is back. This is the server-drop case — the loop died abruptly
-    // with messages still waiting.
-    const stranded = dropped.find((a) => a.queueCount > 0);
-    if (stranded) {
+    const victim = dropped[0];
+    // Previously-connected tiles stay in the pool — re-prime in place so the same
+    // agentId (and its on-disk queue) survives. Closing would spawn a stranger
+    // and lose routing history.
+    if (victim.connectCount > 0) {
       dlog(
-        `keep-connected: re-priming dropped agent ${stranded.agentId.slice(0, 8)} in place (${stranded.queueCount} queued)`,
+        `keep-connected: re-priming dropped agent ${victim.agentId.slice(0, 8)} in place` +
+          (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
         "warn",
       );
       postWorkflow({
         type: "workflowOutput",
         stream: "stdout",
-        line: `[jefr] keep-connected: agent ${stranded.agentId.slice(0, 8)} dropped with ${stranded.queueCount} queued — re-priming in place to drain its queue`,
+        line:
+          `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} dropped` +
+          (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") +
+          " — re-priming in place",
       });
-      tileStateManager.markReconnectAttempt(stranded.agentId);
-      runWorkflow({ reconnect: true, agentId: stranded.agentId });
+      tileStateManager.markReconnectAttempt(victim.agentId);
+      runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
       return;
     }
 
-    const victim = dropped[0];
+    // Never-connected plain "down" tile — close and let topUpPool spawn a fresh one.
     healingTile = true;
-    dlog(`keep-connected: closing cut-off agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
+    dlog(`keep-connected: closing idle agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
     postWorkflow({
       type: "workflowOutput",
       stream: "stdout",
-      line: `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} cut out — closing its tile and spawning a replacement`,
+      line: `[jefr] keep-connected: idle tile ${victim.agentId.slice(0, 8)} — closing and spawning a replacement`,
     });
     try {
       const closed = cdpEnabled
@@ -582,7 +680,7 @@ async function maintainPool(): Promise<void> {
         // Couldn't close (selector drift) — fall back to a re-prime so the tile
         // isn't left dead.
         tileStateManager.markReconnectAttempt(victim.agentId);
-        runWorkflow({ reconnect: true, agentId: victim.agentId });
+        runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
         return;
       }
     } finally {
@@ -592,7 +690,8 @@ async function maintainPool(): Promise<void> {
     pushAgentList();
   }
 
-  topUpPool();
+  // Do not topUpPool() here — keep-N maintains the agents already in the pool.
+  // Filling toward Target is manual (+ Add / Fill) only.
 }
 
 /** Close every cut-off (dropped) tile on demand — no replacement is spawned.
@@ -768,13 +867,13 @@ function runWorkflow(opts: WorkflowOptions): void {
     args.push(opts.autoPrompt);
   }
   if (!opts.reconnect) {
-    args.push("--model", (opts.model && opts.model.trim()) || WORKFLOW_DEFAULT_MODEL);
     // Accumulate agents by default: keep already-open tiles instead of collapsing
     // them, so the roster can hold several agents online at once.
     if (opts.keepTiles !== false) {
       args.push("--keep-tiles");
     }
   }
+  args.push("--model", (opts.model && opts.model.trim()) || WORKFLOW_DEFAULT_MODEL);
   if (opts.opusPrompt && opts.opusPrompt.trim()) {
     args.push("--type-text", opts.opusPrompt);
   }
@@ -870,6 +969,15 @@ function runWorkflow(opts: WorkflowOptions): void {
     spawnBaselineAgentIds = undefined;
     lastAgentListJson = undefined;
     pushAgentList();
+    // A fresh spawn nests a new pane via Ctrl+D, which leaves the tiling tree
+    // lopsided (50/25/12.5/…). Re-balance so every tile ends up equal width.
+    // Skipped for reconnects (no new tile) and only when no further spawn is
+    // queued, so we don't equalize a layout that's about to change again.
+    if (cdpEnabled && !opts.reconnect && pendingAgentAdds <= 0) {
+      setTimeout(() => {
+        void getCdpMonitor().equalizeTiles().catch(() => false);
+      }, 600);
+    }
     // Chain the next queued "fill pool" spawn, if any.
     processAgentAddQueue();
   });
@@ -1003,6 +1111,24 @@ function readMcpDataDir(
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionVersion = context.extension.packageJSON?.version || "0.0.0";
+  extensionContext = context;
+  // Restore the persisted pool target (slot count + keep-N baseline).
+  targetAgentCount = Math.max(
+    MIN_TARGET_AGENT_COUNT,
+    Math.min(
+      MAX_TARGET_AGENT_COUNT,
+      Math.floor(
+        context.globalState.get<number>(
+          TARGET_AGENT_COUNT_KEY,
+          DEFAULT_TARGET_AGENT_COUNT,
+        ),
+      ),
+    ),
+  );
+  // Restore the persisted pool spawn model (used by Add / Fill / keep-N).
+  poolModel =
+    context.globalState.get<string>(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL) ||
+    WORKFLOW_DEFAULT_MODEL;
   const workspaceFolders = vscode.workspace.workspaceFolders || [];
   currentDataDir = readMcpDataDir(workspaceFolders) ?? computeDataDir(workspaceFolders);
   setDataDir(currentDataDir);
@@ -1020,8 +1146,9 @@ export function activate(context: vscode.ExtensionContext): void {
         text: item.content,
         caption: item.caption,
         path: item.path,
-        name: item.path ? path.basename(item.path) : undefined,
+        name: item.name || (item.path ? path.basename(item.path) : undefined),
         dataUrl: item.dataUrl,
+        images: item.images,
         time: new Date(item.timestamp || Date.now()).toLocaleTimeString(),
       },
     });
@@ -1088,7 +1215,11 @@ export function activate(context: vscode.ExtensionContext): void {
   startIdleTimer();
   autoSetupMcp();
   startCdpMonitoring(); // CDP-based tile state monitoring
+  startPoolTick(); // periodic self-heal re-check (drives the 30s drop-confirm)
   setWorkspaceInfo(getWorkspaceName(), getWorkspacePath() || "");
+  // Let a remote client (Obsidian) pick the routed agent via the same flow the
+  // panel uses, so the selection + webview stay consistent everywhere.
+  setSelectAgentHandler((id) => selectAgent(id));
 
   startLocalServer()
     .then((port) => {
@@ -1143,6 +1274,10 @@ export function deactivate(): void {
   }
   if (idleTimer) {
     clearInterval(idleTimer);
+  }
+  if (poolTickTimer) {
+    clearInterval(poolTickTimer);
+    poolTickTimer = undefined;
   }
   stopWorkflow();
   stopLocalServer();
@@ -1240,7 +1375,7 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
         stream: "stdout",
         line: `[jefr] auto-reconnect: agent ${target.slice(0, 8)} dropped — re-priming its tile`,
       });
-      runWorkflow({ reconnect: true, agentId: target });
+      runWorkflow({ reconnect: true, agentId: target, model: poolModel });
     }
   }
 
@@ -1263,7 +1398,8 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
     })),
     selected: selectedAgentId || null,
     autoReconnect,
-    targetAgentCount: TARGET_AGENT_COUNT,
+    targetAgentCount,
+    workflowModel: poolModel,
     cdpConnected: cdpFallback ? (lastCdpStatus?.connected ?? false) : false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0,
@@ -1639,23 +1775,24 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case "refreshAgents": {
-          // Force a fresh CDP poll and re-push the full roster on demand. CDP
-          // only auto-pushes on a tile-state CHANGE, so a manual refresh kicks a
-          // poll and clears the dedupe cache to guarantee every real tile (incl.
-          // dropped ones) is re-scanned and rendered.
+          // Manual hard refresh. A plain poll is usually a no-op because the
+          // 500ms loop already keeps the roster current — and it can't recover a
+          // drifted/stale CDP session. So we tear the session down and reconnect
+          // from scratch (forceReconnect), clearing both dedupe caches (the
+          // monitor's lastStatus and our lastAgentListJson) so the roster is
+          // rebuilt and re-pushed even when the result is byte-identical.
           lastAgentListJson = undefined;
-          if (cdpEnabled) {
-            getCdpMonitor()
-              .pollNow()
-              .then(() => {
-                lastAgentListJson = undefined;
-                pushAgentList();
-              })
-              .catch(() => {
-                pushAgentList();
-              });
-          } else {
+          // Tell the panel the refresh finished so it can clear its spinner even
+          // when the agent list itself didn't change.
+          const ackRefresh = () => {
+            lastAgentListJson = undefined;
             pushAgentList();
+            mainPanel?.webview.postMessage({ type: "agentsRefreshed" });
+          };
+          if (cdpEnabled) {
+            getCdpMonitor().forceReconnect().then(ackRefresh, ackRefresh);
+          } else {
+            ackRefresh();
           }
           break;
         }
@@ -1678,7 +1815,33 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           autoReconnect = !!msg.enabled;
           lastAgentListJson = undefined; // force a re-push with the new flag
           pushAgentList();
+          // Turning it ON should reconcile right away (close any already-dropped
+          // tile + top up) instead of waiting for the next 5s tick.
+          if (autoReconnect) void maintainPool();
           break;
+        case "setTargetAgentCount":
+          if (typeof msg.count === "number" && Number.isFinite(msg.count)) {
+            setTargetAgentCount(msg.count);
+          }
+          break;
+        case "setWorkflowModel":
+          if (typeof msg.model === "string") {
+            setPoolModel(msg.model);
+          }
+          break;
+        case "equalizeTiles": {
+          if (cdpEnabled) {
+            const ok = await getCdpMonitor().equalizeTiles().catch(() => false);
+            postWorkflow({
+              type: "workflowOutput",
+              stream: ok ? "stdout" : "stderr",
+              line: ok
+                ? "[jefr] equalized tile sizes"
+                : "[jefr] could not equalize tiles (no tiling layout?)",
+            });
+          }
+          break;
+        }
         case "reconnectAgent": {
           const aid = typeof msg.agentId === "string" ? msg.agentId : undefined;
           if (aid) {
@@ -1694,28 +1857,29 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
               s.reconnectsSinceConnect++;
               s.lastReconnectAt = Date.now();
             }
-            runWorkflow({ reconnect: true, agentId: aid });
+            runWorkflow({ reconnect: true, agentId: aid, model: poolModel });
           }
           break;
         }
         case "addAgent": {
           // Manual add has NO cap — the user can grow the pool to as many agents
-          // as they want. TARGET_AGENT_COUNT is only the auto-fill / keep-N
-          // baseline, not a hard ceiling on manual spawns.
+          // as they want. targetAgentCount is only the auto-fill / keep-N
+          // baseline, not a hard ceiling on manual spawns. Model defaults to the
+          // pool's selected model (the workflow dropdown).
           runWorkflow({
-            model: (typeof msg.model === "string" && msg.model.trim()) || WORKFLOW_DEFAULT_MODEL,
+            model: (typeof msg.model === "string" && msg.model.trim()) || poolModel,
             keepTiles: true,
           });
           break;
         }
         case "addAgents": {
           const model =
-            (typeof msg.model === "string" && msg.model.trim()) || WORKFLOW_DEFAULT_MODEL;
+            (typeof msg.model === "string" && msg.model.trim()) || poolModel;
           // Default: fill the pool to the target. An explicit count caps it.
           const count =
             typeof msg.count === "number" && Number.isFinite(msg.count) && msg.count > 0
               ? Math.floor(msg.count)
-              : TARGET_AGENT_COUNT;
+              : targetAgentCount;
           queueAgentAdds(count, model);
           break;
         }
@@ -1814,6 +1978,14 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
             return;
           }
           this.handlePastedImage(msg.dataUrl, msg.caption);
+          resetIdleTimer();
+          triggerCursorChat();
+          break;
+        case "sendPastedImages":
+          if (!this.checkCard()) {
+            return;
+          }
+          this.handlePastedImages(msg.images, msg.caption);
           resetIdleTimer();
           triggerCursorChat();
           break;
@@ -1920,6 +2092,9 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
               opusPrompt: msg.opusPrompt,
               maxSecs: msg.maxSecs,
               enterInterval: msg.enterInterval,
+              model:
+                (typeof msg.model === "string" && msg.model.trim()) ||
+                poolModel,
             });
           } catch (e) {
             postWorkflow({
@@ -1974,6 +2149,60 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
         caption,
         name: path.basename(tmpPath),
         path: tmpPath,
+        timestamp: item.timestamp,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Queue text + multiple pasted images as ONE message. Each data: URL is
+   *  written to a temp file, then all are bundled into a single queue item. */
+  private handlePastedImages(
+    images: Array<{ dataUrl: string; name?: string }>,
+    caption?: string,
+  ): void {
+    try {
+      const list = Array.isArray(images) ? images : [];
+      const decoded: Array<{ path: string; dataUrl: string; name?: string }> = [];
+      for (const img of list) {
+        const match =
+          typeof img?.dataUrl === "string"
+            ? img.dataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+            : null;
+        if (!match) {
+          continue;
+        }
+        const ext = match[1] === "jpeg" ? "jpg" : match[1];
+        const buf = Buffer.from(match[2], "base64");
+        const tmpPath = path.join(
+          os.tmpdir(),
+          "mcp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + "." + ext,
+        );
+        fs.writeFileSync(tmpPath, buf);
+        decoded.push({
+          path: tmpPath,
+          dataUrl: img.dataUrl,
+          name: img.name || path.basename(tmpPath),
+        });
+      }
+      if (decoded.length === 0) {
+        return;
+      }
+      // A single image goes down the plain image path so nothing changes for it.
+      if (decoded.length === 1) {
+        this.handlePastedImage(decoded[0].dataUrl, caption);
+        return;
+      }
+      const item = sendImagesTo(selectedAgentId, decoded, caption);
+      appendSharedHistory({
+        id: item.id,
+        kind: "image",
+        dataUrl: decoded[0].dataUrl,
+        caption,
+        name: decoded[0].name,
+        path: decoded[0].path,
+        images: decoded.map((d) => ({ path: d.path, dataUrl: d.dataUrl, name: d.name })),
         timestamp: item.timestamp,
       });
     } catch {

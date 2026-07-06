@@ -24,6 +24,7 @@
   padding: 10px 12px;
   border-bottom: 1px solid var(--background-modifier-border);
   flex: 0 0 auto;
+  position: relative;
 }
 
 .jefr-brand {
@@ -125,6 +126,157 @@
 }
 .jefr-queue-badge:empty {
   display: none;
+}
+
+/* Compact-mode "routes to" label: the connected agent/workspace name with a
+   leading dot colored by agent liveness. Hidden in expanded mode (the status +
+   agent pills and the workspace line cover it there). */
+.jefr-route {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 160px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  user-select: none;
+}
+.jefr-route:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.jefr-route::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: 0 0 auto;
+}
+.jefr-route-ready::before {
+  background: var(--color-green, #16a34a);
+}
+.jefr-route-busy::before {
+  background: var(--color-orange, #d97706);
+}
+.jefr-route-idle::before {
+  background: var(--text-faint);
+}
+.jefr-route-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jefr-route-caret {
+  font-size: 9px;
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+
+/* Agent picker dropdown (opened by clicking the route label in compact mode).
+   Kept smaller than the header so it never looks oversized. */
+.jefr-agent-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 8px;
+  z-index: 30;
+  min-width: 132px;
+  max-width: 200px;
+  margin-top: 3px;
+  padding: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  font-size: 10px;
+}
+.jefr-agent-menu.jefr-open {
+  display: block;
+}
+
+/* Agent route picker pinned with the composer (always visible, by the input). */
+.jefr-composer-route {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px 0;
+}
+/* Always show the route label here (the base .jefr-route is display:none, which
+   only revealed it in the old compact header). */
+.jefr-composer-route .jefr-route {
+  display: inline-flex;
+  max-width: 100%;
+}
+/* Open the dropdown downward (compact is the default mode — the route row sits at
+   the top, so there's room below over the composer). */
+.jefr-composer-route .jefr-agent-menu {
+  top: 100%;
+  bottom: auto;
+  left: 0;
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+.jefr-agent-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-normal);
+  line-height: 1.2;
+}
+.jefr-agent-opt:hover {
+  background: var(--background-modifier-hover);
+}
+.jefr-agent-opt-active {
+  background: var(--background-secondary);
+}
+.jefr-agent-opt-active .jefr-agent-opt-name {
+  font-weight: 600;
+}
+.jefr-agent-opt-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: 0 0 auto;
+}
+.jefr-agent-opt-dot.is-listening {
+  background: var(--color-green, #16a34a);
+}
+.jefr-agent-opt-dot.is-busy {
+  background: var(--color-orange, #d97706);
+}
+.jefr-agent-opt-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.jefr-agent-opt-id {
+  font-family: var(--font-monospace, monospace);
+  font-size: 10px;
+}
+.jefr-agent-opt-meta {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 8px;
+  color: var(--text-faint);
+}
+.jefr-agent-empty {
+  padding: 4px 6px;
+  text-align: center;
+  font-size: 9px;
+  color: var(--text-faint);
 }
 
 /* Collapsible queued-messages panel (toggled by the queue badge) */
@@ -551,13 +703,34 @@
 
 /* ---------------- Composer ---------------- */
 
-.jefr-composer {
+/* Bottom dock: the header sits together with the composer as one integrated
+   input block, below the scrollable conversation. */
+.jefr-dock {
   flex: 0 0 auto;
   border-top: 1px solid var(--background-modifier-border);
-  padding: 10px 12px 12px;
   background: var(--background-primary);
-  position: sticky;
-  bottom: 0;
+}
+.jefr-dock .jefr-header {
+  border-bottom: none;
+  padding: 8px 12px 4px;
+}
+/* Smaller expand/compact toggle. */
+.jefr-minimize-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+.jefr-minimize-btn .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.jefr-composer {
+  flex: 0 0 auto;
+  border-top: none;
+  padding: 6px 12px 12px;
+  background: var(--background-primary);
+  position: static;
   z-index: 2;
 }
 .jefr-input {
@@ -578,7 +751,7 @@
 }
 .jefr-input:focus {
   border-color: var(--jefr-accent);
-  box-shadow: 0 0 0 3px var(--jefr-accent-soft);
+  box-shadow: 0 0 0 2px var(--jefr-accent-soft);
 }
 
 .jefr-composer.jefr-dragover .jefr-input {
@@ -634,6 +807,9 @@
 
 .jefr-bubble-image {
   padding: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .jefr-msg-img {
   display: block;
@@ -641,6 +817,14 @@
   max-height: 240px;
   border-radius: 9px;
   object-fit: contain;
+}
+.jefr-bubble-image:has(.jefr-msg-img + .jefr-msg-img) .jefr-msg-img {
+  max-width: 47%;
+  max-height: 160px;
+}
+.jefr-bubble-image .jefr-bubble-text,
+.jefr-bubble-image .jefr-bubble-time {
+  flex-basis: 100%;
 }
 
 .jefr-toolbar {
@@ -722,29 +906,49 @@
 .jefr-minimized .jefr-workspace,
 .jefr-minimized .jefr-messages,
 .jefr-minimized .jefr-toolbar,
-.jefr-minimized .jefr-agent {
+.jefr-minimized .jefr-agent,
+.jefr-minimized .jefr-status,
+.jefr-minimized .jefr-reconnect-btn {
   display: none;
 }
-/* Compact: header sits above a full-height composer inside the scroll region.
-   By default we scroll past the header (see scrollPastHeader) so only the text
-   area shows; scrolling up reveals the header. */
+/* Compact header = jefr + routes-to label + queued badge + expand only. */
+.jefr-minimized .jefr-route:not(:empty) {
+  display: inline-flex;
+}
+.jefr-minimized .jefr-brand {
+  gap: 8px;
+  min-width: 0;
+}
+.jefr-minimized .jefr-logo {
+  font-size: 13px;
+}
+.jefr-minimized .jefr-header-right {
+  gap: 6px;
+}
+/* Compact: hide the conversation; the dock (header + full-height composer) fills
+   the panel, so it's a clean tall input box with the controls right above it. */
 .jefr-minimized .jefr-scroll {
+  display: none;
+}
+.jefr-minimized .jefr-dock {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  display: block;
-}
-.jefr-minimized .jefr-header {
-  padding: 6px 10px;
-}
-.jefr-minimized .jefr-composer {
-  position: static;
-  height: 100%;
   display: flex;
   flex-direction: column;
   border-top: none;
-  padding: 8px;
+}
+/* Compact hides our header entirely — Obsidian's tab/title already says "jefr",
+   so the wordmark + pills were redundant. The route row (picker + expand) is the
+   only chrome above the input. */
+.jefr-minimized .jefr-header {
+  display: none;
+}
+.jefr-minimized .jefr-composer {
+  flex: 1 1 auto;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
 }
 .jefr-minimized .jefr-input {
   flex: 1 1 auto;

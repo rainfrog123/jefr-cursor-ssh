@@ -65,9 +65,23 @@ function HistoryRow(props: { item: HistoryItem }): JSX.Element {
     <div className={classes}>
       <span className="hi-idx">{item.index ?? ""}</span>
 
-      {item.kind === "image" && item.dataUrl ? (
+      {item.kind === "image" && (item.images?.length || item.dataUrl) ? (
         <div className="hi-media">
-          <img className="hi-thumb" src={item.dataUrl} alt={item.name || "image"} />
+          <div className="hi-thumbs">
+            {(item.images && item.images.length > 0
+              ? item.images
+              : [{ dataUrl: item.dataUrl, name: item.name }]
+            ).map((img, i) =>
+              img.dataUrl ? (
+                <img
+                  key={i}
+                  className="hi-thumb"
+                  src={img.dataUrl}
+                  alt={img.name || "image"}
+                />
+              ) : null,
+            )}
+          </div>
           {item.caption && <span className="hi-caption">{item.caption}</span>}
         </div>
       ) : item.kind === "file" ? (
@@ -195,21 +209,20 @@ function Composer(props: {
     const images = props.attachments.filter((a) => a.type === "image" && a.dataUrl);
     const files = props.attachments.filter((a) => a.type !== "image");
 
-    // A message with text + image(s) is sent as ONE message: the text rides along
-    // as the first image's caption, so it renders as a single combined bubble
-    // (thumbnail + text) instead of two separate items.
+    // A message with text + image(s) is sent as ONE message: all images plus the
+    // text travel together in a single envelope, so it becomes exactly one queue
+    // item (rendered as one combined bubble) instead of one item per image.
     if (images.length > 0) {
-      images.forEach((a, i) => {
-        const caption = i === 0 ? trimmed : "";
-        post({ type: "sendPastedImage", dataUrl: a.dataUrl!, caption });
-        props.appendHistory({
-          id: makeId(),
-          kind: "image",
-          dataUrl: a.dataUrl,
-          name: a.name,
-          caption: caption || undefined,
-          time,
-        });
+      const imgs = images.map((a) => ({ dataUrl: a.dataUrl!, name: a.name }));
+      post({ type: "sendPastedImages", images: imgs, caption: trimmed });
+      props.appendHistory({
+        id: makeId(),
+        kind: "image",
+        dataUrl: imgs[0].dataUrl,
+        name: imgs[0].name,
+        images: imgs,
+        caption: trimmed || undefined,
+        time,
       });
     } else if (trimmed) {
       post({ type: "sendText", text: trimmed });

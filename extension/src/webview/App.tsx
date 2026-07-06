@@ -24,6 +24,7 @@ import { QueueTab } from "./components/QueueTab";
 import { GeneralTab, type WorkflowLine } from "./components/GeneralTab";
 import { AgentsTab } from "./components/AgentsTab";
 import { AgentDetail } from "./components/AgentDetail";
+import { DEFAULT_WORKFLOW_MODEL } from "./workflowModels";
 import { applyScale, loadScale } from "./fontScale";
 
 type TabId = "agents" | "queue" | "general";
@@ -107,9 +108,12 @@ export function App(): JSX.Element {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [autoReconnect, setAutoReconnect] = useState(false);
   const [targetAgentCount, setTargetAgentCount] = useState(5);
+  const [workflowModel, setWorkflowModel] = useState<string>(DEFAULT_WORKFLOW_MODEL);
   const [cdpConnected, setCdpConnected] = useState<boolean | undefined>(undefined);
   const [connectingAgentId, setConnectingAgentId] = useState<string | null>(null);
   const [connectingSince, setConnectingSince] = useState<number>(0);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* Apply the saved font scale on first load. The FontScale control now lives on
      the General tab / chat toolbar, so without this top-level apply the saved zoom
@@ -200,12 +204,20 @@ export function App(): JSX.Element {
           setSelectedAgentId(msg.selected);
           setAutoReconnect(msg.autoReconnect);
           if (msg.targetAgentCount != null) setTargetAgentCount(msg.targetAgentCount);
+          if (msg.workflowModel) setWorkflowModel(msg.workflowModel);
           if (msg.cdpConnected !== undefined) setCdpConnected(msg.cdpConnected);
           setConnectingAgentId(msg.connectingAgentId ?? null);
           setConnectingSince(msg.connectingSince ?? 0);
           break;
         case "agentSelected":
           setSelectedAgentId(msg.agentId);
+          break;
+        case "agentsRefreshed":
+          if (refreshTimer.current) {
+            clearTimeout(refreshTimer.current);
+            refreshTimer.current = null;
+          }
+          setRefreshing(false);
           break;
         // cardState / cardActivated / cardError / serverInfo are accepted but
         // the local build keeps licensing disabled (checkCard() === true).
@@ -294,6 +306,26 @@ export function App(): JSX.Element {
     []
   );
 
+  /* Manual hard refresh: kick the host's CDP reconnect + re-push, and show a
+     spinner until it acks (with a safety timeout so the button never sticks). */
+  /* Change the pool's spawn model. Optimistically update local state and tell the
+     host to persist it — it becomes the model for Add agent / Fill / keep-N and is
+     mirrored back to both tabs on the next roster push. */
+  const onSetWorkflowModel = useCallback((m: string) => {
+    setWorkflowModel(m);
+    post({ type: "setWorkflowModel", model: m });
+  }, []);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    post({ type: "refreshAgents" });
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      setRefreshing(false);
+      refreshTimer.current = null;
+    }, 5000);
+  }, []);
+
   /* The active agent's conversation (derived from the per-agent map). */
   const history = histories[keyFor(selectedAgentId)] ?? [];
 
@@ -361,11 +393,14 @@ export function App(): JSX.Element {
           selectedAgentId={selectedAgentId}
           autoReconnect={autoReconnect}
           targetAgentCount={targetAgentCount}
+          workflowModel={workflowModel}
           cdpConnected={cdpConnected}
           workflowRunning={workflowRunning}
           connectingAgentId={connectingAgentId}
           connectingSince={connectingSince}
           sharedQueueCount={sharedRootCount}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
           onSelectAgent={onSelectAgent}
           onOpenDetail={openDetail}
         />
@@ -399,6 +434,8 @@ export function App(): JSX.Element {
           usage={usage}
           loading={usageLoading}
           tokenInjected={tokenInjected}
+          workflowModel={workflowModel}
+          onModelChange={onSetWorkflowModel}
           workflowRunning={workflowRunning}
           workflowOutput={workflowOutput}
           onClearWorkflowOutput={() => setWorkflowOutput([])}

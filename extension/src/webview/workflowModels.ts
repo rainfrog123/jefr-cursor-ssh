@@ -7,6 +7,7 @@
  *  enabled models change (Cursor's "Add Models"), update this list to match.
  */
 export const WORKFLOW_MODELS = [
+  "Auto",
   "Composer 2.5 Fast",
   "GPT-5.5 Extra High Fast",
   "Opus 4.5",

@@ -858,6 +858,15 @@ input:focus-visible {
 	background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
+/* Refresh button while a hard refresh is in flight: gentle pulse + a clear
+   "busy" cursor so the click always reads as having done something, even when
+   the resulting roster is unchanged. */
+.btn.is-refreshing {
+	animation: pulse 1s ease-in-out infinite;
+	cursor: progress;
+	opacity: 0.85 !important;
+}
+
 .btn-small {
 	padding: 5px 12px;
 	font-size: var(--text-xs);
@@ -1306,9 +1315,15 @@ input:focus-visible {
 	gap: 6px;
 	min-width: 0;
 }
+.queue-img-thumbs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	min-width: 0;
+}
 .queue-img-thumb {
-	max-width: 180px;
-	max-height: 140px;
+	max-width: 120px;
+	max-height: 100px;
 	width: auto;
 	height: auto;
 	border-radius: 8px;
@@ -2420,9 +2435,15 @@ input:focus-visible {
 	gap: 6px;
 }
 
+.hi-thumbs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
 .hi-thumb {
-	max-width: 160px;
-	max-height: 120px;
+	max-width: 140px;
+	max-height: 110px;
 	border-radius: var(--radius-sm);
 	border: 1px solid var(--border-strong);
 	object-fit: cover;
@@ -2698,17 +2719,77 @@ input:focus-visible {
 .agents-slots-hint {
 	font-size: var(--text-xs);
 	color: var(--fg-muted);
-	margin-left: auto;
+	white-space: nowrap;
+	flex-shrink: 0;
 }
 
+.agents-pool-controls {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.agents-pool-controls .agents-auto {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.agents-pool-controls .agents-slots-hint {
+	margin-left: 0;
+}
+
+.agents-target {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: var(--text-xs);
+	color: var(--fg-secondary);
+}
+
+.agents-target-label {
+	margin-right: 2px;
+}
+
+.agents-target .agents-target-btn {
+	padding: 3px 8px;
+	border-radius: 6px;
+	line-height: 1;
+	font-weight: 600;
+}
+
+.agents-target-num {
+	min-width: 16px;
+	text-align: center;
+	font-weight: 600;
+	color: var(--fg-primary);
+}
+
+/* Standalone control row — paired with the free-slot hint in
+   .agents-pool-controls so it never overlaps the agent cards below. */
 .agents-auto {
 	display: flex;
 	align-items: center;
-	gap: 5px;
+	gap: 6px;
 	font-size: var(--text-xs);
 	color: var(--fg-secondary);
 	cursor: pointer;
-	margin-left: auto;
+	padding: 6px 10px;
+	border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+	border-radius: 9px;
+	background: var(--surface-1);
+}
+
+.agents-auto input {
+	cursor: pointer;
+	margin: 0;
+}
+
+.agents-auto-muted {
+	cursor: default;
+	color: var(--fg-muted);
+	opacity: 0.85;
 }
 
 .agents-slots {

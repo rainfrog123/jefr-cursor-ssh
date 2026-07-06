@@ -92,12 +92,20 @@ function systemSuffix(agentId?: string): string {
 /* Data-shape types (mirrors of the JSON written by the extension)     */
 /* ------------------------------------------------------------------ */
 
+interface QueueImage {
+  path?: string;
+  dataUrl?: string;
+  name?: string;
+}
+
 interface QueueMessage {
   id?: string;
   type: "text" | "image" | "file";
   content?: string;
   path?: string;
   caption?: string;
+  /** All images when one message bundles more than one picture. */
+  images?: QueueImage[];
   suffix?: string;
   timestamp?: string;
 }
@@ -160,6 +168,10 @@ const BUSY_WINDOW_MS = Number(process.env.MESSENGER_BUSY_WINDOW_MS) || 180_000;
 interface AgentLiveness {
   dir: string;
   lastInteractionTs: number;
+  /** Epoch ms of the last send_progress call — drives the short "working"
+   *  heartbeat inertia between tool calls. check_messages exit must NOT refresh
+   *  this, or a standby tile keeps reading alive for minutes. */
+  lastBusyTs: number;
   /** >0 while this agent is blocked in check_messages/ask_question. */
   activeWaits: number;
 }
@@ -175,7 +187,7 @@ function noteAgentInteraction(dir: string, agentId?: string): AgentLiveness {
   const key = livenessKey(agentId);
   let rec = agentLiveness.get(key);
   if (!rec) {
-    rec = { dir, lastInteractionTs: 0, activeWaits: 0 };
+    rec = { dir, lastInteractionTs: 0, lastBusyTs: 0, activeWaits: 0 };
     agentLiveness.set(key, rec);
   }
   rec.dir = dir;
@@ -197,7 +209,7 @@ const livenessTicker = setInterval(() => {
   for (const [key, rec] of agentLiveness) {
     if (!key) continue; // root is handled by the legacy globals above
     if (rec.activeWaits > 0) continue; // blocked call keeps it warm as "waiting"
-    if (now - rec.lastInteractionTs < BUSY_WINDOW_MS) {
+    if (now - rec.lastBusyTs < BUSY_WINDOW_MS) {
       void touchAgentAlive(rec.dir, "working", key);
     }
   }
@@ -356,23 +368,39 @@ async function processTextMessage(msg: QueueMessage): Promise<ContentPart> {
   return { type: "text", text: msg.content || "" };
 }
 
-async function processImageMessage(
-  msg: QueueMessage,
-): Promise<ContentPart | ContentPart[]> {
-  const filePath = msg.path;
-  if (!filePath) return { type: "text", text: "[Image message: empty path]" };
+/** Read one image file into an MCP image content part, or null on failure. */
+async function readImagePart(filePath: string): Promise<ContentPart | null> {
   try {
     const buf = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const mime = MIME_MAP[ext] || "application/octet-stream";
-    const base64 = buf.toString("base64");
-    const result: ContentPart[] = [];
-    if (msg.caption) result.push({ type: "text", text: msg.caption });
-    result.push({ type: "image", data: base64, mimeType: mime });
-    return result.length === 1 ? result[0] : result;
+    return { type: "image", data: buf.toString("base64"), mimeType: mime };
   } catch {
-    return { type: "text", text: `[Image read failed: ${filePath}]` };
+    return null;
   }
+}
+
+async function processImageMessage(
+  msg: QueueMessage,
+): Promise<ContentPart | ContentPart[]> {
+  // Multi-image message: one caption followed by every image, all delivered as
+  // a single user turn (this is one queue item).
+  const paths =
+    Array.isArray(msg.images) && msg.images.length > 0
+      ? msg.images.map((im) => im.path).filter((p): p is string => !!p)
+      : msg.path
+        ? [msg.path]
+        : [];
+  if (paths.length === 0) return { type: "text", text: "[Image message: empty path]" };
+
+  const result: ContentPart[] = [];
+  if (msg.caption) result.push({ type: "text", text: msg.caption });
+  for (const filePath of paths) {
+    const part = await readImagePart(filePath);
+    if (part) result.push(part);
+    else result.push({ type: "text", text: `[Image read failed: ${filePath}]` });
+  }
+  return result.length === 1 ? result[0] : result;
 }
 
 /** Text file extensions that get inlined (under the size cap). */
@@ -612,8 +640,8 @@ server.tool(
     } finally {
       activeWaits--;
       live.activeWaits--;
-      live.lastInteractionTs = Date.now();
-      lastInteractionTs = Date.now();
+      // Do NOT bump lastBusyTs here — a finished/cancelled wait must not inherit
+      // minutes of "working" heartbeat inertia (standby-without-loop case).
     }
   },
 );
@@ -640,8 +668,9 @@ server.tool(
   async ({ progress, percent, agent_id }) => {
     const dir = dirFor(agent_id);
     await ensureDir(dir);
-    noteAgentInteraction(dir, agent_id);
+    const live = noteAgentInteraction(dir, agent_id);
     lastInteractionTs = Date.now();
+    live.lastBusyTs = Date.now();
     await touchAgentAlive(dir, "working", agent_id);
     const payload: Record<string, unknown> = {
       content: progress,
@@ -799,8 +828,6 @@ server.tool(
     } finally {
       activeWaits--;
       live.activeWaits--;
-      live.lastInteractionTs = Date.now();
-      lastInteractionTs = Date.now();
     }
   },
 );

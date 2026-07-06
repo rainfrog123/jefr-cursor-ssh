@@ -38,6 +38,17 @@ export interface TileInfo {
   planning: boolean;
   /** True when "Worked for..." completion marker is visible */
   worked: boolean;
+  /** True when the tile is idle with the injected prompt restored, un-sent, in its
+   *  composer — Cursor puts the draft back when a held-open turn dies, so this
+   *  catches a cut-off that left no "Worked for…" stamp. Fingerprint-scoped to the
+   *  spawn prompts so a human-typed draft can't trip it. */
+  draftPending: boolean;
+  /** True when the transcript tail shows a standby reply while the tile is idle
+   *  (no blocked check_messages) — the loop cut out without a "Worked for…" stamp. */
+  standbyCutoff: boolean;
+  /** True when this tile shows the "Payment failed … Manage Billing" banner — the
+   *  account's billing is blocked, so the tile can't run. Auto-closed on sight. */
+  billingBlocked: boolean;
 }
 
 export interface CdpStatus {
@@ -227,6 +238,25 @@ export class CdpMonitor extends EventEmitter {
 
   /** Force an immediate poll (useful after actions). */
   async pollNow(): Promise<CdpStatus> {
+    return this.poll();
+  }
+
+  /** Hard refresh: tear down the current CDP session and dedupe cache, then
+   *  poll fresh. A plain pollNow() reuses the existing session and skips the
+   *  status emit when nothing changed — useless when the session has drifted or
+   *  gone stale (selectors changed, page swapped, socket half-dead). Dropping the
+   *  session forces the next poll to reconnect from scratch, and clearing
+   *  lastStatus guarantees the status event re-fires so the roster is rebuilt and
+   *  re-pushed even if the result is byte-identical. Used by the manual Refresh
+   *  button so it can actually recover a wedged monitor instead of no-op'ing. */
+  async forceReconnect(): Promise<CdpStatus> {
+    if (this.session) {
+      this.session.close();
+      this.session = null;
+    }
+    this.wsUrl = null;
+    this.pageTitle = null;
+    this.lastStatus = null;
     return this.poll();
   }
 
@@ -617,6 +647,85 @@ export class CdpMonitor extends EventEmitter {
     }
   }
 
+  /** Equalize every agent tile to the same width. Cursor's tiling is a binary
+   *  split tree (`.ui-tiling` → `.ui-tiling-branch` → `.ui-tiling-child`…), and
+   *  each Ctrl+D split halves the focused pane, so repeated spawns leave the
+   *  leaves lopsided (50% / 25% / 12.5% / …). We can't just set every split to
+   *  50/50 — that's what causes the imbalance — so instead we weight each branch's
+   *  children by how many leaf panels live under each side. Setting flex-basis on
+   *  the `.ui-tiling-child` wrappers (same property Cursor itself uses) makes all
+   *  leaves render at equal size. Returns true when at least one tiling tree was
+   *  balanced. */
+  async equalizeTiles(): Promise<boolean> {
+    if (!this.session) return false;
+    const js = `
+(function() {
+  const root = document.querySelector('.ui-tiling');
+  if (!root) return false;
+  const leaves = (el) => {
+    const p = el.querySelectorAll('.ui-tiling-panel');
+    return p.length || 1;
+  };
+  function balance(branch) {
+    const kids = [...branch.children].filter(
+      (c) => c.classList && c.classList.contains('ui-tiling-child')
+    );
+    if (!kids.length) return;
+    const counts = kids.map(leaves);
+    const total = counts.reduce((a, b) => a + b, 0) || kids.length;
+    kids.forEach((c, i) => {
+      const pct = (counts[i] / total) * 100;
+      c.style.flexBasis = 'calc(' + pct + '% - var(--tiling-sash-layout-size) / 2)';
+      const inner = [...c.children].find(
+        (x) => x.classList && x.classList.contains('ui-tiling-branch')
+      );
+      if (inner) balance(inner);
+    });
+  }
+  const top = [...root.children].find(
+    (x) => x.classList && x.classList.contains('ui-tiling-branch')
+  );
+  if (!top) return false;
+  balance(top);
+  return true;
+})()
+    `;
+    try {
+      return !!(await this.session.evaluate(js, false));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Hide (not remove) the "Payment failed … Manage Billing" banner(s). The banner
+   *  has no native dismiss button, so we set display:none on any matching
+   *  `.ui-short-tray`. Hiding (vs removing) keeps the node in the DOM so React's
+   *  reconciler stays happy. No in-page observer — the caller re-applies this on the
+   *  regular poll (status change + self-heal tick), so a React re-render that brings
+   *  the banner back is undone on the next poll. Idempotent and cheap. Returns how
+   *  many were hidden. */
+  async hideBillingBanners(): Promise<number> {
+    if (!this.session) return 0;
+    const js = `
+(function(){
+  let n = 0;
+  document.querySelectorAll('.ui-short-tray').forEach(tr => {
+    if (/payment failed|manage billing/i.test(tr.textContent || '')) {
+      if (tr.style.display !== 'none') tr.style.display = 'none';
+      n++;
+    }
+  });
+  return n;
+})()
+    `;
+    try {
+      const v = await this.session.evaluate(js, false);
+      return typeof v === "number" ? v : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   private async queryTileState(): Promise<TileInfo[]> {
     const js = `
 (function() {
@@ -747,14 +856,45 @@ export class CdpMonitor extends EventEmitter {
     const tail = full.length > 400 ? full.slice(-400) : full;
     const worked = /worked for\\s+[\\dhms ]+/i.test(statusText) || /worked for\\s+[\\dhms ]+/i.test(tail);
 
+    // Restored-draft signal: when a held-open turn dies, Cursor puts the un-sent
+    // prompt back into the composer. A tile sitting idle with the injected spawn
+    // prompt still in its composer = the agent is gone, even with no "Worked for…"
+    // stamp. Fingerprint-scoped to the spawn prompts so a human-typed draft can't
+    // trip it; only meaningful for a previously-connected agent (gated in tile-state).
+    const draftEl = t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror') || t.querySelector('.tiptap.ProseMirror');
+    const draftText = ((draftEl && draftEl.textContent) || '').trim();
+    const draftPending =
+      !generating && !planning && !mcpRunning && !toolWorking &&
+      draftText.length > 0 &&
+      /keep the mcp connection|stand by|check\\s*messages|agent_id|invoke the mcp|call the mcp directly/i.test(draftText);
+
+    // Standby-in-transcript: the agent replied "standing by / waiting" and stopped
+    // re-calling check_messages. Catches the drop even when the composer is empty
+    // and there's no "Worked for…" stamp — the case that kept reading as Working.
+    const standbyCutoff =
+      !generating && !planning && !mcpRunning && !toolWorking &&
+      /standing\\s+by|waiting for your next instruction/i.test(tail);
+
     const model = t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';
+
+    // Billing-blocked banner: "Payment failed … Manage Billing" (a .ui-short-tray
+    // with a Manage Billing button). Scoped to short tray/button text so a chat
+    // message that merely mentions billing can't false-trip it.
+    const billingBlocked = [...t.querySelectorAll('.ui-short-tray, .ui-button, button, a')]
+      .some(e => {
+        const x = (e.textContent || '').trim();
+        return x.length < 160 && /payment failed|manage billing/i.test(x);
+      });
 
     // Precedence: a live MCP call wins over planning/generating, so a transient
     // "Planning next moves" shimmer can't demote a held-open connection (which
     // previously flip-flopped the state, inflating connect counts and resetting
     // uptime).
+    // A "Worked for…" stamp or a restored draft means the turn ended, so a still-
+    // "running" jefr card is stale and must NOT force mcp_connected (that was masking
+    // cut-off tiles as connected/working).
     let state = 'idle';
-    if (mcpRunning) state = 'mcp_connected';
+    if (mcpRunning && !worked && !draftPending && !standbyCutoff) state = 'mcp_connected';
     else if (planning) state = 'planning';
     else if (generating) state = 'generating';
     else if (toolWorking) state = 'generating';
@@ -769,8 +909,11 @@ export class CdpMonitor extends EventEmitter {
       generating: generating || toolWorking,
       planning,
       worked,
+      draftPending,
+      standbyCutoff,
+      billingBlocked,
     };
-  });
+    });
 })()
     `;
     const result = await this.session!.evaluate(js, false);

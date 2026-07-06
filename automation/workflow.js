@@ -81,10 +81,15 @@
   agentId = agentId || agentIdOfTile(tileAt(getIdx()));
   if (!agentId) return { error: 'no agentId for new tile', idx: getIdx(), log, snapshot: snapshot() };
 
-  // Select target model (passed via --model argument), addressed by agentId.
-  r = await selectTargetModelByAgent(agentId, MODEL);
-  log.push({ step: 'selectModel', model: MODEL, ...r });
-  if (r.error) return { error: r.error, agentId, log, snapshot: snapshot() };
+  // Target model (from --model). When it's Auto we're already on Auto from the
+  // stand-by step — skip the picker round-trip.
+  if (!/^auto$/i.test(String(MODEL || '').trim())) {
+    r = await selectTargetModelByAgent(agentId, MODEL);
+    log.push({ step: 'selectModel', model: MODEL, ...r });
+    if (r.error) return { error: r.error, agentId, log, snapshot: snapshot() };
+  } else {
+    log.push({ step: 'selectModel', model: MODEL, skipped: true, reason: 'already Auto' });
+  }
 
   const finalIdx = idxByAgentId(agentId);
   focusEditorIn(finalIdx);

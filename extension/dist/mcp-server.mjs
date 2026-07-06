@@ -31019,7 +31019,7 @@ function noteAgentInteraction(dir, agentId) {
   const key = livenessKey(agentId);
   let rec = agentLiveness.get(key);
   if (!rec) {
-    rec = { dir, lastInteractionTs: 0, activeWaits: 0 };
+    rec = { dir, lastInteractionTs: 0, lastBusyTs: 0, activeWaits: 0 };
     agentLiveness.set(key, rec);
   }
   rec.dir = dir;
@@ -31038,7 +31038,7 @@ var livenessTicker = setInterval(() => {
       continue;
     if (rec.activeWaits > 0)
       continue;
-    if (now - rec.lastInteractionTs < BUSY_WINDOW_MS) {
+    if (now - rec.lastBusyTs < BUSY_WINDOW_MS) {
       void touchAgentAlive(rec.dir, "working", key);
     }
   }
@@ -31163,23 +31163,31 @@ function formatSize(bytes) {
 async function processTextMessage(msg) {
   return { type: "text", text: msg.content || "" };
 }
-async function processImageMessage(msg) {
-  const filePath = msg.path;
-  if (!filePath)
-    return { type: "text", text: "[Image message: empty path]" };
+async function readImagePart(filePath) {
   try {
     const buf = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const mime = MIME_MAP[ext] || "application/octet-stream";
-    const base643 = buf.toString("base64");
-    const result = [];
-    if (msg.caption)
-      result.push({ type: "text", text: msg.caption });
-    result.push({ type: "image", data: base643, mimeType: mime });
-    return result.length === 1 ? result[0] : result;
+    return { type: "image", data: buf.toString("base64"), mimeType: mime };
   } catch {
-    return { type: "text", text: `[Image read failed: ${filePath}]` };
+    return null;
   }
+}
+async function processImageMessage(msg) {
+  const paths = Array.isArray(msg.images) && msg.images.length > 0 ? msg.images.map((im) => im.path).filter((p) => !!p) : msg.path ? [msg.path] : [];
+  if (paths.length === 0)
+    return { type: "text", text: "[Image message: empty path]" };
+  const result = [];
+  if (msg.caption)
+    result.push({ type: "text", text: msg.caption });
+  for (const filePath of paths) {
+    const part = await readImagePart(filePath);
+    if (part)
+      result.push(part);
+    else
+      result.push({ type: "text", text: `[Image read failed: ${filePath}]` });
+  }
+  return result.length === 1 ? result[0] : result;
 }
 var TEXT_EXTS = /* @__PURE__ */ new Set([
   ".txt",
@@ -31399,8 +31407,6 @@ ${firstText.text}`;
     } finally {
       activeWaits--;
       live.activeWaits--;
-      live.lastInteractionTs = Date.now();
-      lastInteractionTs = Date.now();
     }
   }
 );
@@ -31415,8 +31421,9 @@ server.tool(
   async ({ progress, percent, agent_id }) => {
     const dir = dirFor(agent_id);
     await ensureDir(dir);
-    noteAgentInteraction(dir, agent_id);
+    const live = noteAgentInteraction(dir, agent_id);
     lastInteractionTs = Date.now();
+    live.lastBusyTs = Date.now();
     await touchAgentAlive(dir, "working", agent_id);
     const payload = {
       content: progress,
@@ -31561,8 +31568,6 @@ server.tool(
     } finally {
       activeWaits--;
       live.activeWaits--;
-      live.lastInteractionTs = Date.now();
-      lastInteractionTs = Date.now();
     }
   }
 );

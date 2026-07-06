@@ -60,7 +60,22 @@ function isServerDropped(a: AgentState): boolean {
     a.connectCount > 0 &&
     !isLiveState(a.state) &&
     !a.worked &&
-    (a.mcpErrored || a.queueCount > 0 || !a.heartbeatAlive)
+    (a.mcpErrored || a.standbyCutoff || a.queueCount > 0 || !a.heartbeatAlive)
+  );
+}
+
+/** True when a real (non-synthetic) visible tile is NOT live right now — i.e. it
+ *  is not parked in the MCP loop and not busy (generating / planning / working).
+ *  "Keep N connected" means keep N agents actually live, so the self-heal targets
+ *  ANY non-live tile — a clean cut-off ("Worked for…"), an abrupt server drop, OR
+ *  a plain idle/"down" tile (e.g. one re-discovered idle after a reload, or whose
+ *  loop ended with no stamp). Drives each agent's `notLiveSince` stamp so the
+ *  CONFIRM window can require a sustained non-live state before acting. */
+function isUnhealthy(a: AgentState): boolean {
+  return (
+    !a.agentId.startsWith("tile:") &&
+    a.tileIndex >= 0 &&
+    !isLiveState(a.state)
   );
 }
 
@@ -73,6 +88,7 @@ function resolveState(
   loopAlive: boolean,
   mcpErrored: boolean,
   busyAlive: boolean,
+  ended: boolean,
 ): TileState {
   // A live MCP card right now is the strongest signal.
   if (rawState === "mcp_connected") return "mcp_connected";
@@ -88,12 +104,19 @@ function resolveState(
   // Inside the grace window after a recent ping, hold the connection so the
   // planning/generating/idle blip between calls doesn't read as a disconnect.
   if (loopAlive) return "mcp_connected";
-  // Recently busy — ride out the brief gap between a tool finishing and the next
-  // generation so a working tile doesn't flicker to idle and trip a false drop.
-  if (busyAlive) return "generating";
-  // Loop has gone quiet past the window — report the real transient state, but
-  // let a fresh heartbeat upgrade an otherwise-idle tile.
-  if (heartbeatState && rawState === "idle") return heartbeatState;
+  // The turn ENDED / loop cut out — proven by a "Worked for…" completion stamp OR
+  // by the injected prompt being restored, un-sent, into the composer. Either vetoes
+  // the two "still alive" inertia signals below (the busy-grace window and a
+  // lingering "working" heartbeat), so a cut-off tile stops reading as "Working"
+  // (which masked the drop). During real work neither is set, so the grace/heartbeat
+  // still smooth over the gaps between tool calls.
+  if (busyAlive && !ended) return "generating";
+  // Only a blocked check_messages heartbeat ("waiting") may upgrade an idle CDP
+  // tile to connected. A lingering "working" heartbeat from the post-call inertia
+  // ticker must NOT keep a standby/dead tile reading as Working for minutes.
+  if (heartbeatState === "waiting" && rawState === "idle" && !ended) {
+    return "mcp_connected";
+  }
   return rawState;
 }
 
@@ -131,6 +154,15 @@ export interface AgentState {
   /** True when the tile shows a "Worked for ..." completion stamp — i.e. the turn
    *  ended and the MCP connection cut out. The reliable clean-cutoff signal. */
   worked: boolean;
+  /** True when the tile is idle with the injected prompt restored, un-sent, in its
+   *  composer — Cursor puts the draft back when a held-open turn dies. Catches a
+   *  cut-off with no "Worked for…" stamp. Only treated as a drop for an agent that
+   *  already connected (connectCount > 0), so a fresh spawn isn't misflagged. */
+  draftPending: boolean;
+  /** True when the transcript tail shows the agent ended with a standby reply
+   *  (no blocked check_messages) — the loop is cut even without a "Worked for…"
+   *  stamp or a restored composer draft. */
+  standbyCutoff: boolean;
   /** True when a jefr check_messages card is in a cancelled/failed state — the
    *  server-drop fingerprint: the held-open call died WITHOUT a clean turn-end,
    *  so there's no "Worked for…" stamp. Used to catch a drop that would otherwise
@@ -145,6 +177,13 @@ export interface AgentState {
   /** Epoch ms this agent was last seen in a tile. Drives the forget window so
    *  vanished tiles don't linger in the map forever. */
   lastSeen: number;
+  /** Epoch ms this tile first entered a confirmed-dropped condition (cut-off
+   *  "Worked for…" stamp or a server drop) and has stayed there since. 0 when the
+   *  tile is live / not dropped. Drives the self-heal CONFIRM window: a tile must
+   *  stay dropped for `confirmMs` before it's closed + replaced, so a momentary
+   *  blip never triggers a needless respawn. Reset to 0 the moment the tile is
+   *  live again (or vanishes). */
+  droppedSince: number;
   /** How long the most recent live connection lasted before it dropped (ms).
    *  Captured at drop time — BEFORE `connectedSince` is cleared — so a
    *  dropped / server-dropped tile (whose `connectedSince` is now 0) can still
@@ -225,6 +264,7 @@ export class TileStateManager {
         loopAlive,
         tile.mcpErrored,
         busyAlive,
+        tile.worked || tile.draftPending || tile.standbyCutoff,
       );
       if (!existing) {
         // New agent discovered
@@ -249,11 +289,22 @@ export class TileStateManager {
           reconnectStreak: 0,
           lastReconnectAt: 0,
           worked: tile.worked,
+          draftPending: tile.draftPending,
+          standbyCutoff: tile.standbyCutoff,
           mcpErrored: tile.mcpErrored,
           heartbeatAlive: heartbeatStates.has(id),
           lastSeen: now,
           lastConnectedMs: 0,
+          droppedSince: 0,
         };
+        if (isUnhealthy(newState)) {
+          // A pre-existing ENDED loop (worked stamp / server drop) is a confirmed
+          // drop — backdate so the self-heal acts immediately, not 30s from
+          // discovery. A plain idle/empty tile (incl. a brand-new one, or one
+          // mid-spawn) gets the normal 30s confirm so it isn't recycled instantly.
+          newState.droppedSince =
+            newState.worked || isServerDropped(newState) ? 1 : now;
+        }
         this.agents.set(id, newState);
         transitions.push({ type: "new_agent", agentId: id, to: state });
         if (isConnectedState(state)) {
@@ -266,6 +317,8 @@ export class TileStateManager {
         existing.model = tile.model;
         existing.queueCount = queueCounts.get(id) || 0;
         existing.worked = tile.worked;
+        existing.draftPending = tile.draftPending;
+        existing.standbyCutoff = tile.standbyCutoff;
         existing.mcpErrored = tile.mcpErrored;
         existing.heartbeatAlive = heartbeatStates.has(id);
         existing.lastMcpAt = lastMcpAt;
@@ -330,6 +383,15 @@ export class TileStateManager {
         if (existing.connectCount === 0 && tile.worked) {
           existing.connectCount = 1;
         }
+
+        // Maintain the non-live confirm stamp: start the clock the first poll this
+        // tile reads as non-live, and keep it ticking until the tile is live again
+        // (or vanishes, handled below). A live/healthy tile always clears it.
+        if (isUnhealthy(existing)) {
+          if (!existing.droppedSince) existing.droppedSince = now;
+        } else {
+          existing.droppedSince = 0;
+        }
       }
     }
 
@@ -361,8 +423,13 @@ export class TileStateManager {
         agent.lastMcpAt = 0;
         agent.lastBusyAt = 0;
         agent.worked = false;
+        agent.draftPending = false;
+        agent.standbyCutoff = false;
         agent.mcpErrored = false;
         agent.heartbeatAlive = false;
+        // A tile that's no longer visible isn't a reconnectable in-place drop —
+        // clear the confirm clock so a later reappearance restarts it cleanly.
+        agent.droppedSince = 0;
         if (prevState !== "idle") {
           agent.state = "idle";
           const heldMs = prevConnectedSince ? now - prevConnectedSince : 0;
@@ -416,7 +483,8 @@ export class TileStateManager {
    *  The stamp / error / queue gates distinguish a real drop from a tile that's
    *  merely idle (freshly spawned, or the user is mid-type), avoiding needless
    *  re-primes. */
-  getDroppedAgents(): AgentState[] {
+  getDroppedAgents(confirmMs = 0): AgentState[] {
+    const now = Date.now();
     return this.getAgents().filter((a) =>
       // Real agentId only — never try to reconnect a synthetic slot id, which
       // the workflow can't target (no fiber agentId to focus).
@@ -428,7 +496,29 @@ export class TileStateManager {
       // Not currently live (MCP loop, working heartbeat, generating, or planning)
       !isLiveState(a.state) &&
       // A clean cut-out (completion stamp) OR an abrupt server drop.
-      (a.worked || isServerDropped(a))
+      (a.worked || a.draftPending || isServerDropped(a)) &&
+      // CONFIRM window: only act on a tile that has stayed dropped for at least
+      // `confirmMs` (0 = act immediately, used by the manual "Close dropped").
+      (confirmMs <= 0 ||
+        (a.droppedSince > 0 && now - a.droppedSince >= confirmMs))
+    );
+  }
+
+  /** Tiles the "Keep N connected" self-heal should act on: ANY real, visible tile
+   *  that is not live and has stayed non-live for `confirmMs`. Broader than
+   *  getDroppedAgents (the clean-cutoff / server-drop subset used for UI labels and
+   *  the manual "Close dropped") — Keep-N must also recycle a plain "down" tile
+   *  (e.g. one re-discovered idle after a reload, or whose loop ended with no
+   *  stamp) so the pool keeps N agents actually mcp_connected / working. */
+  getAgentsNeedingHeal(confirmMs = 0): AgentState[] {
+    const now = Date.now();
+    return this.getAgents().filter(
+      (a) =>
+        !a.agentId.startsWith("tile:") &&
+        a.tileIndex >= 0 &&
+        !isLiveState(a.state) &&
+        (confirmMs <= 0 ||
+          (a.droppedSince > 0 && now - a.droppedSince >= confirmMs)),
     );
   }
 
@@ -474,7 +564,7 @@ export class TileStateManager {
         state: a.state as AgentView["state"],
         // A clean cut-out: previously connected, now idle, "Worked for..."
         // stamp present. Lets the UI show a distinct reconnectable state.
-        dropped: a.connectCount > 0 && !isLiveState(a.state) && a.worked,
+        dropped: a.connectCount > 0 && !isLiveState(a.state) && (a.worked || a.draftPending),
         // An abrupt server drop (no clean stamp) — surfaced separately so the UI
         // can flag it distinctly from a polite cut-off. Synthetic slot ids can't
         // be re-primed, so never mark them.

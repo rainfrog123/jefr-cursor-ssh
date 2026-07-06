@@ -151,8 +151,26 @@ function QueueRow(props: {
           />
         ) : item.type === "image" ? (
           <div className="queue-img">
-            {item.dataUrl ? (
-              <img className="queue-img-thumb" src={item.dataUrl} alt={item.caption || item.name || "image"} />
+            {item.images?.length || item.dataUrl ? (
+              <div className="queue-img-thumbs">
+                {(item.images && item.images.length > 0
+                  ? item.images
+                  : [{ dataUrl: item.dataUrl, name: item.name, path: item.path }]
+                ).map((img, i) =>
+                  img.dataUrl ? (
+                    <img
+                      key={i}
+                      className="queue-img-thumb"
+                      src={img.dataUrl}
+                      alt={img.name || "image"}
+                    />
+                  ) : (
+                    <span key={i} className="queue-img-name">
+                      {img.name || (img.path || "").split(/[\\/]/).pop()}
+                    </span>
+                  ),
+                )}
+              </div>
             ) : (
               <span className="queue-img-name">{item.name || (item.path || "").split(/[\\/]/).pop()}</span>
             )}
