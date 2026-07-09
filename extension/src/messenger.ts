@@ -903,6 +903,8 @@ export interface LiveAgent {
   state: AgentLivenessState;
   ts: number;
   queueCount: number;
+  /** Model name from CDP (when cdp-status.json is available). */
+  model?: string;
 }
 
 /** Scan <dataDir>/agents/* for agents whose heartbeat is fresh. This is how the

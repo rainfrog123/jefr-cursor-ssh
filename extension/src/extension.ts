@@ -75,6 +75,7 @@ import {
   setSelectAgentHandler,
   getServerPort,
   getConnectedClients,
+  setBridgeAgentModels,
 } from "./local-server";
 import {
   reconcile,
@@ -110,15 +111,42 @@ let lastActivityTime = Date.now();
 let selectedAgentId: string | undefined;
 let lastAgentListJson: string | undefined;
 
-// Auto-reconnect: when a previously-connected agent's heartbeat goes stale, the
-// extension re-primes its tile via the CDP workflow. Off by default; togglable.
-let autoReconnect = false;
+// Per-agent keep: when a dropped tile has keep enabled, the extension re-primes
+// that tile in place. No global "Keep agents" — each tile opts in on its own.
+const keepConnectedAgents = new Set<string>();
+const KEEP_CONNECTED_KEY = "jefr.keepConnectedAgents";
 const RECONNECT_DEBOUNCE_MS = 30_000;
+
+function anyKeepConnected(): boolean {
+  return keepConnectedAgents.size > 0;
+}
+
+function setAgentKeepConnected(agentId: string, enabled: boolean): void {
+  const id = agentId.trim();
+  if (!id) return;
+  if (enabled) keepConnectedAgents.add(id);
+  else keepConnectedAgents.delete(id);
+  void extensionContext?.globalState.update(
+    KEEP_CONNECTED_KEY,
+    [...keepConnectedAgents],
+  );
+  lastAgentListJson = undefined;
+  pushAgentList();
+  if (enabled) void maintainPool();
+}
+
+function forgetKeepConnected(agentId: string): void {
+  if (!keepConnectedAgents.delete(agentId)) return;
+  void extensionContext?.globalState.update(
+    KEEP_CONNECTED_KEY,
+    [...keepConnectedAgents],
+  );
+}
 /** How long a tile must stay continuously cut off before the self-healing pool
  *  closes it and spawns a replacement. A drop must be CONFIRMED for this long —
  *  not a momentary blip — so a healthy-but-bursty loop is never needlessly
  *  recycled. Drives `maintainPool` via `getDroppedAgents(CONFIRM_DROP_MS)`. */
-const CONFIRM_DROP_MS = 30_000;
+const CONFIRM_DROP_MS = 10_000;
 /** Forget disconnected agents after this long without a heartbeat — they're
  *  tombstones from closed tabs / past sessions and shouldn't linger or be
  *  reconnected. */
@@ -204,7 +232,7 @@ function startCdpMonitoring(): void {
     }
 
     // Self-healing pool: close cut-off tiles and top up to the target.
-    if (autoReconnect && !workflowProc && !healingTile) {
+    if (anyKeepConnected() && !workflowProc && !healingTile) {
       void maintainPool();
     }
 
@@ -249,11 +277,15 @@ function pushAgentListFromCdp(): void {
   lastPushedAgentIds = new Set(agents.map((a) => a.id));
 
   const payload = {
-    agents: agents.map((a) => ({ ...a, connectMs: agentConnectMs.get(a.id) })),
+    agents: agents.map((a) => ({
+      ...a,
+      connectMs: agentConnectMs.get(a.id),
+      keepConnected: keepConnectedAgents.has(a.id),
+    })),
     selected: selectedAgentId || null,
-    autoReconnect,
     targetAgentCount,
     workflowModel: poolModel,
+    skipAutoPhase,
     cdpConnected: lastCdpStatus?.connected ?? false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0,
@@ -274,6 +306,7 @@ function pushAgentListFromCdp(): void {
 
 /** Write CDP-derived agent status to a file for external consumers (Obsidian plugin). */
 function writeCdpStatusFile(agents: AgentView[]): void {
+  setBridgeAgentModels(agents);
   try {
     const statusFile = path.join(os.homedir(), ".moyu-message", "cdp-status.json");
     const status = {
@@ -398,6 +431,10 @@ function bundledWorkflowScript(): string {
   return path.join(__dirname, "..", "..", "automation", "workflow.py");
 }
 
+function bundledCdpScript(): string {
+  return path.join(__dirname, "..", "..", "automation", "cdp.py");
+}
+
 /** Cached workflow script path (recomputed when workspace folders change). */
 let resolvedWorkflowScript: string | undefined;
 let resolvedWorkflowScriptFor: string | undefined;
@@ -407,6 +444,7 @@ let resolvedWorkflowScriptFor: string | undefined;
  *   1. jefr-cursor/automation/ bundled next to this extension
  *   2. automation/workflow.py in each open workspace folder
  * Returns null when neither exists.
+ * Spawn and reconnect both use this script (--reconnect implies skip-auto).
  */
 function resolveWorkflowScript(): string | null {
   const wsKey = (vscode.workspace.workspaceFolders || [])
@@ -424,22 +462,209 @@ function resolveWorkflowScript(): string | null {
   return resolvedWorkflowScript || null;
 }
 
+/** Resolve cdp.py — same search order as workflow.py. */
+function resolveCdpScript(): string | null {
+  const candidates: string[] = [bundledCdpScript()];
+  for (const folder of vscode.workspace.workspaceFolders || []) {
+    candidates.push(path.join(folder.uri.fsPath, "automation", "cdp.py"));
+  }
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
 /** Default model for workflow spawn (--model when the UI omits one). */
 const WORKFLOW_DEFAULT_MODEL = "Opus 4.8 1M Extra High Fast";
+/** Static fallback when CDP hasn't refreshed the live picker yet. */
+const FALLBACK_WORKFLOW_MODELS: string[] = [
+  "Auto",
+  "Composer 2.5 Fast",
+  "Opus 4.8 1M Extra High Fast",
+  "GPT-5.5 Extra High Fast",
+  "Fable 5 1M High",
+  "GLM 5.2 High",
+];
 /** The model the whole pool spawns with — Add agent, Fill, AND keep-N respawns
  *  all use it. Set from the workflow dropdown, persisted, surfaced to the UI so
  *  both tabs stay in sync. Falls back to WORKFLOW_DEFAULT_MODEL. */
 let poolModel: string = WORKFLOW_DEFAULT_MODEL;
 const WORKFLOW_MODEL_KEY = "jefr.workflowModel";
+/** Live picker rows from the last successful CDP refresh (persisted). */
+let workflowModels: string[] = [...FALLBACK_WORKFLOW_MODELS];
+const WORKFLOW_MODELS_KEY = "jefr.workflowModels";
+let workflowModelsRefreshing = false;
+/** Skip Auto stand-by phase on spawn (persisted). Off by default. */
+let skipAutoPhase = false;
+const SKIP_AUTO_KEY = "jefr.skipAutoPhase";
+
+/** Migrate legacy persisted labels (e.g. Opus 4.5) to a live picker row. */
+function normalizePoolModel(model: string | undefined): string {
+  const m = (model || "").trim();
+  if (/^Opus 4\.5/i.test(m)) return WORKFLOW_DEFAULT_MODEL;
+  return m || WORKFLOW_DEFAULT_MODEL;
+}
+
+function setSkipAutoPhase(enabled: boolean): void {
+  if (skipAutoPhase === enabled) return;
+  skipAutoPhase = enabled;
+  void extensionContext?.globalState.update(SKIP_AUTO_KEY, enabled);
+  lastAgentListJson = undefined;
+  pushAgentList();
+}
+
+function pushWorkflowModels(extra?: { error?: string; refreshing?: boolean }): void {
+  mainPanel?.webview.postMessage({
+    type: "workflowModels",
+    models: workflowModels,
+    selected: poolModel,
+    refreshing: extra?.refreshing ?? workflowModelsRefreshing,
+    error: extra?.error,
+  });
+}
+
+function cleanModelLabel(m: string): string {
+  return m
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function setWorkflowModelsList(models: string[]): void {
+  const cleaned = models.map(cleanModelLabel).filter(Boolean);
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const m of cleaned) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    next.push(m);
+  }
+  if (next.length === 0) return;
+  workflowModels = next;
+  void extensionContext?.globalState.update(WORKFLOW_MODELS_KEY, next);
+}
 
 function setPoolModel(next: string): void {
-  const m = (next && next.trim()) || WORKFLOW_DEFAULT_MODEL;
+  const m = normalizePoolModel(next);
   if (m === poolModel) return;
   poolModel = m;
   void extensionContext?.globalState.update(WORKFLOW_MODEL_KEY, m);
   dlog(`pool model set to ${m}`);
   lastAgentListJson = undefined; // force a re-push so both tabs reflect it
   pushAgentList();
+  pushWorkflowModels();
+}
+
+/** Open Cursor's model picker via CDP and replace the workflow dropdown options. */
+function refreshWorkflowModelsFromPicker(): void {
+  if (workflowModelsRefreshing) return;
+  const py = resolvePython();
+  const script = resolveCdpScript();
+  if (!py) {
+    pushWorkflowModels({
+      error: "Python not found on PATH (tried python / py / python3).",
+    });
+    dlog("refresh models: python not found", "error");
+    return;
+  }
+  if (!script) {
+    pushWorkflowModels({
+      error: "cdp.py not found — open the jefr-cursor workspace.",
+    });
+    dlog("refresh models: cdp.py not found", "error");
+    return;
+  }
+
+  workflowModelsRefreshing = true;
+  pushWorkflowModels({ refreshing: true });
+  dlog("refresh models: reading live Cursor picker via CDP…");
+
+  let proc: ChildProcess;
+  try {
+    proc = spawn(py, [script, "--models", "--tile", "-1"], {
+      cwd: path.dirname(script),
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+    });
+  } catch (e) {
+    workflowModelsRefreshing = false;
+    const msg = (e as Error).message;
+    pushWorkflowModels({ error: `Failed to start CDP: ${msg}` });
+    dlog(`refresh models: spawn failed — ${msg}`, "error");
+    return;
+  }
+
+  let stdout = "";
+  let stderr = "";
+  proc.stdout?.on("data", (buf: Buffer) => {
+    stdout += buf.toString("utf-8");
+  });
+  proc.stderr?.on("data", (buf: Buffer) => {
+    stderr += buf.toString("utf-8");
+  });
+  proc.on("error", (err) => {
+    workflowModelsRefreshing = false;
+    pushWorkflowModels({ error: err.message });
+    dlog(`refresh models: ${err.message}`, "error");
+  });
+  proc.on("close", (code) => {
+    workflowModelsRefreshing = false;
+    const combined = `${stdout}\n${stderr}`;
+    // cdp.py prints: RESULT {"tile":…,"models":[…],…} (single-line JSON)
+    const resultIdx = combined.lastIndexOf("RESULT");
+    const after = resultIdx >= 0 ? combined.slice(resultIdx + "RESULT".length).trim() : "";
+    const jsonStart = after.indexOf("{");
+    const jsonEnd = after.lastIndexOf("}");
+    const rawJson =
+      jsonStart >= 0 && jsonEnd > jsonStart
+        ? after.slice(jsonStart, jsonEnd + 1)
+        : "";
+    if (!rawJson) {
+      const hint =
+        /cannot reach|remote-debugging-port/i.test(combined)
+          ? "CDP unreachable — is Cursor on --remote-debugging-port=9222?"
+          : /no workbench|no tile|no model picker/i.test(combined)
+            ? "No agent tile / model picker found — open an agent chat first."
+            : `cdp.py --models failed (exit ${code}).`;
+      pushWorkflowModels({ error: hint });
+      dlog(`refresh models failed: ${hint}`, "error");
+      if (combined.trim()) {
+        dlog(`refresh models raw: ${combined.trim().slice(0, 400)}`, "warn");
+      }
+      return;
+    }
+    try {
+      const parsed = JSON.parse(rawJson) as {
+        models?: unknown;
+        error?: string;
+        current?: string;
+      };
+      if (parsed.error) {
+        pushWorkflowModels({ error: String(parsed.error) });
+        dlog(`refresh models: picker error — ${parsed.error}`, "error");
+        return;
+      }
+      const models = Array.isArray(parsed.models)
+        ? parsed.models.filter((x): x is string => typeof x === "string" && !!x.trim())
+        : [];
+      if (models.length === 0) {
+        pushWorkflowModels({ error: "Picker returned no models." });
+        dlog("refresh models: empty list", "warn");
+        return;
+      }
+      setWorkflowModelsList(models);
+      // Keep the current selection if still present; otherwise leave it (UI
+      // mergeWorkflowModels will still show it as an extra option).
+      dlog(`refresh models: ${models.length} from live picker` +
+        (parsed.current ? ` (tile shows ${parsed.current})` : ""));
+      pushWorkflowModels();
+      postWorkflow({
+        type: "workflowOutput",
+        stream: "stdout",
+        line: `[jefr] refreshed ${models.length} models from Cursor picker`,
+      });
+    } catch (e) {
+      pushWorkflowModels({ error: `Bad CDP JSON: ${(e as Error).message}` });
+      dlog(`refresh models: parse error — ${(e as Error).message}`, "error");
+    }
+  });
 }
 /** Target number of agents to keep online — the slot count AND the "Keep N
  *  connected" baseline (one knob drives both). Default 5, user-adjustable from
@@ -514,7 +739,7 @@ function processAgentAddQueue(): void {
     return;
   }
   pendingAgentAdds--;
-  runWorkflow({ model: pendingAgentModel, keepTiles: true });
+  runWorkflow({ model: pendingAgentModel, keepTiles: true, skipAuto: skipAutoPhase });
 }
 
 // ── Self-healing pool ("Keep N connected") ──────────────────────────────────
@@ -539,9 +764,9 @@ function hideBillingBannersNow(): void {
 
 /** Periodic self-heal tick. The CDP monitor only emits a status event when the
  *  tile state CHANGES, so a tile that quietly sits cut off would never re-trigger
- *  maintainPool — meaning the 30s CONFIRM window could never elapse on its own.
+ *  maintainPool — meaning the CONFIRM window could never elapse on its own.
  *  This interval re-runs the pool check on a fixed cadence while "Keep N
- *  connected" is on, so a confirmed drop is acted on ~30s after it happened and
+ *  connected" is on, so a confirmed drop is acted on ~10s after it happened and
  *  any shortfall below the target is topped up even when nothing else changes. */
 let poolTickTimer: ReturnType<typeof setInterval> | undefined;
 const POOL_TICK_MS = 5_000;
@@ -556,7 +781,7 @@ function startPoolTick(): void {
       hideBillingBannersNow();
     }
     if (workflowProc || healingTile) return;
-    if (!autoReconnect || pendingAgentAdds > 0) return;
+    if (!anyKeepConnected() || pendingAgentAdds > 0) return;
     void maintainPool();
   }, POOL_TICK_MS);
 }
@@ -586,8 +811,22 @@ function gcDeadAgentDirs(): void {
   for (const v of tileStateManager.toAgentViews()) live.add(v.id);
   if (selectedAgentId) live.add(selectedAgentId);
 
+  const cdpViews = tileStateManager.toAgentViews();
+  const cdpIds =
+    cdpEnabled && (lastCdpStatus?.connected ?? false) && cdpViews.length > 0
+      ? new Set(cdpViews.map((v) => v.id))
+      : null;
+
   for (const id of listAgentDirIds()) {
-    if (live.has(id)) continue; // a visible tile or the routing target — keep
+    if (live.has(id)) continue;
+    // Tile gone from CDP but MCP ticker still refreshes heartbeat — reap now.
+    if (cdpIds && !cdpIds.has(id) && getAgentStatusFor(id).alive) {
+      tileStateManager.forgetAgent(id);
+      agentStats.delete(id);
+      forgetAgentDir(id);
+      dlog(`reaped ghost agent ${id.slice(0, 8)} (no CDP tile)`);
+      continue;
+    }
     if (getAgentStatusFor(id).alive) continue; // still heartbeating — keep
     // Dead: no tile, stale heartbeat. Drop roster bookkeeping + the on-disk dir.
     tileStateManager.forgetAgent(id);
@@ -597,9 +836,11 @@ function gcDeadAgentDirs(): void {
   }
 }
 
-/** One self-heal pass: close a cut-off tile (then top up), else top up the pool. */
+/** One self-heal pass: re-prime dropped tiles that opted into per-agent Keep. */
 async function maintainPool(): Promise<void> {
-  if (!autoReconnect || workflowProc || healingTile || pendingAgentAdds > 0) return;
+  if (!anyKeepConnected() || workflowProc || healingTile || pendingAgentAdds > 0) {
+    return;
+  }
 
   // Reap a dead synthetic tile (no resolvable agentId, idle for a while) by
   // index — these can't be reconnected and just clutter the pool.
@@ -629,69 +870,28 @@ async function maintainPool(): Promise<void> {
     return;
   }
 
-  // CONFIRM window: act on any tile that has stayed NON-LIVE (not mcp_connected /
-  // working) for ≥30s — a clean cut-off, a server drop, OR a plain "down" tile —
-  // so the pool keeps N agents actually connected/working. A brief blip never
-  // triggers it (30s confirm), and the manual "Close dropped" button still acts
-  // immediately on the cut-off subset.
-  const dropped = tileStateManager.getAgentsNeedingHeal(CONFIRM_DROP_MS);
-  if (dropped.length > 0) {
-    const victim = dropped[0];
-    // Previously-connected tiles stay in the pool — re-prime in place so the same
-    // agentId (and its on-disk queue) survives. Closing would spawn a stranger
-    // and lose routing history.
-    if (victim.connectCount > 0) {
-      dlog(
-        `keep-connected: re-priming dropped agent ${victim.agentId.slice(0, 8)} in place` +
-          (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
-        "warn",
-      );
-      postWorkflow({
-        type: "workflowOutput",
-        stream: "stdout",
-        line:
-          `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} dropped` +
-          (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") +
-          " — re-priming in place",
-      });
-      tileStateManager.markReconnectAttempt(victim.agentId);
-      runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
-      return;
-    }
+  // Only heal tiles the user opted to Keep. Confirm window: non-live ≥10s.
+  const dropped = tileStateManager
+    .getAgentsNeedingHeal(CONFIRM_DROP_MS)
+    .filter((a) => keepConnectedAgents.has(a.agentId));
+  if (dropped.length === 0) return;
 
-    // Never-connected plain "down" tile — close and let topUpPool spawn a fresh one.
-    healingTile = true;
-    dlog(`keep-connected: closing idle agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
-    postWorkflow({
-      type: "workflowOutput",
-      stream: "stdout",
-      line: `[jefr] keep-connected: idle tile ${victim.agentId.slice(0, 8)} — closing and spawning a replacement`,
-    });
-    try {
-      const closed = cdpEnabled
-        ? await getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false)
-        : false;
-      if (closed) {
-        tileStateManager.forgetAgent(victim.agentId);
-        agentStats.delete(victim.agentId);
-        forgetAgentDir(victim.agentId);
-        if (victim.agentId === selectedAgentId) selectAgent(undefined);
-      } else {
-        // Couldn't close (selector drift) — fall back to a re-prime so the tile
-        // isn't left dead.
-        tileStateManager.markReconnectAttempt(victim.agentId);
-        runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
-        return;
-      }
-    } finally {
-      healingTile = false;
-    }
-    lastAgentListJson = undefined;
-    pushAgentList();
-  }
-
-  // Do not topUpPool() here — keep-N maintains the agents already in the pool.
-  // Filling toward Target is manual (+ Add / Fill) only.
+  const victim = dropped[0];
+  dlog(
+    `keep-connected: re-priming kept agent ${victim.agentId.slice(0, 8)} in place` +
+      (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
+    "warn",
+  );
+  postWorkflow({
+    type: "workflowOutput",
+    stream: "stdout",
+    line:
+      `[jefr] keep: agent ${victim.agentId.slice(0, 8)} dropped` +
+      (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") +
+      " — re-priming in place",
+  });
+  tileStateManager.markReconnectAttempt(victim.agentId);
+  runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
 }
 
 /** Close every cut-off (dropped) tile on demand — no replacement is spawned.
@@ -708,7 +908,11 @@ async function closeDroppedTiles(): Promise<number> {
   try {
     for (const victim of dropped) {
       const ok = cdpEnabled
-        ? await getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false)
+        ? await (async () => {
+            const fast = await getCdpMonitor().closeAgentTileFast(victim.agentId).catch(() => false);
+            if (fast) return true;
+            return getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false);
+          })()
         : false;
       if (ok) {
         tileStateManager.forgetAgent(victim.agentId);
@@ -803,11 +1007,14 @@ interface WorkflowOptions {
   tile?: number;
   /** Target agent id for reconnect (the workflow maps it to the right tile). */
   agentId?: string;
-  /** Model to switch the spawned tile to (passed as --model; spawn path only). */
+  /** Model to select (passed as --model). Spawn and reconnect both use it. */
   model?: string;
   /** Keep existing tiles (don't collapse) so spawns accumulate agents. Spawn
    *  path only; reconnect never collapses. */
   keepTiles?: boolean;
+  /** Skip phase 1 (Auto stand-by turn) and select --model immediately.
+   *  Spawn only as a flag — reconnect always implies skip-auto in workflow.py. */
+  skipAuto?: boolean;
 }
 
 /** Spawn the CDP workflow and stream its output back to the webview. */
@@ -855,25 +1062,31 @@ function runWorkflow(opts: WorkflowOptions): void {
   }
 
   const args: string[] = [script];
+  const model =
+    (opts.model && opts.model.trim()) || poolModel || WORKFLOW_DEFAULT_MODEL;
   if (opts.reconnect) {
-    args.push("--reconnect");
+    // Always workflow.py --reconnect (implies skip-auto: agent id known).
+    args.push("--reconnect", "--model", model);
     if (typeof opts.tile === "number" && Number.isInteger(opts.tile)) {
       args.push("--tile", String(opts.tile));
     }
     if (opts.agentId && opts.agentId.trim()) {
       args.push("--agent-id", opts.agentId.trim());
     }
-  } else if (opts.autoPrompt && opts.autoPrompt.trim()) {
-    args.push(opts.autoPrompt);
-  }
-  if (!opts.reconnect) {
+  } else {
+    if (opts.autoPrompt && opts.autoPrompt.trim()) {
+      args.push(opts.autoPrompt);
+    }
     // Accumulate agents by default: keep already-open tiles instead of collapsing
     // them, so the roster can hold several agents online at once.
     if (opts.keepTiles !== false) {
       args.push("--keep-tiles");
     }
+    args.push("--model", model);
+    if (opts.skipAuto) {
+      args.push("--skip-auto");
+    }
   }
-  args.push("--model", (opts.model && opts.model.trim()) || WORKFLOW_DEFAULT_MODEL);
   if (opts.opusPrompt && opts.opusPrompt.trim()) {
     args.push("--type-text", opts.opusPrompt);
   }
@@ -901,6 +1114,12 @@ function runWorkflow(opts: WorkflowOptions): void {
 
   let proc: ChildProcess;
   try {
+    // Nudge the correct tile to the foreground before the Python workflow's CDP
+    // session connects — especially important for keep-N reconnects with several
+    // tiled agents, where keyboard focus often sits on the wrong pane.
+    if (opts.reconnect && opts.agentId?.trim() && cdpEnabled) {
+      void getCdpMonitor().focusAgent(opts.agentId.trim()).catch(() => {});
+    }
     proc = spawn(py, args, {
       cwd: path.dirname(script),
       windowsHide: true,
@@ -1019,6 +1238,9 @@ function resetIdleTimer(): void {
 }
 
 function startIdleTimer(): void {
+  // Disabled: do not auto-send STAND BY nudges after idle timeout.
+  // (Re-enable the interval below to restore keep-alive nudges.)
+  /*
   if (idleTimer) {
     clearInterval(idleTimer);
   }
@@ -1069,6 +1291,7 @@ function startIdleTimer(): void {
     }
     resetIdleTimer();
   }, 60000);
+  */
 }
 
 function computeDataDir(workspaceFolders: readonly vscode.WorkspaceFolder[]): string {
@@ -1126,9 +1349,34 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
   // Restore the persisted pool spawn model (used by Add / Fill / keep-N).
-  poolModel =
-    context.globalState.get<string>(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL) ||
-    WORKFLOW_DEFAULT_MODEL;
+  poolModel = normalizePoolModel(
+    context.globalState.get<string>(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL),
+  );
+  if (poolModel !== context.globalState.get<string>(WORKFLOW_MODEL_KEY)) {
+    void context.globalState.update(WORKFLOW_MODEL_KEY, poolModel);
+  }
+  skipAutoPhase = context.globalState.get<boolean>(SKIP_AUTO_KEY, false) === true;
+  {
+    const saved = context.globalState.get<string[]>(KEEP_CONNECTED_KEY);
+    keepConnectedAgents.clear();
+    if (Array.isArray(saved)) {
+      for (const id of saved) {
+        if (typeof id === "string" && id.trim()) keepConnectedAgents.add(id.trim());
+      }
+    }
+  }
+  // Restore last live picker snapshot (from Refresh Models); fall back to static.
+  {
+    const saved = context.globalState.get<string[]>(WORKFLOW_MODELS_KEY);
+    if (Array.isArray(saved) && saved.length > 0) {
+      workflowModels = saved
+        .filter((m): m is string => typeof m === "string" && !!m.trim())
+        .map((m) => m.trim());
+    }
+    if (workflowModels.length === 0) {
+      workflowModels = [...FALLBACK_WORKFLOW_MODELS];
+    }
+  }
   const workspaceFolders = vscode.workspace.workspaceFolders || [];
   currentDataDir = readMcpDataDir(workspaceFolders) ?? computeDataDir(workspaceFolders);
   setDataDir(currentDataDir);
@@ -1209,13 +1457,11 @@ export function activate(context: vscode.ExtensionContext): void {
   startPolling();
   startRemotePolling();
   startHeartbeat();
-  // Idle keep-alive: after IDLE_TIMEOUT_MS (5m) with no activity, send a
-  // "STAND BY" nudge to every online + idle agent (never the shared chat, never a
-  // busy agent or one with queued work). See startIdleTimer.
-  startIdleTimer();
+  // Idle keep-alive disabled — do not auto-send STAND BY after idle timeout.
+  // startIdleTimer();
   autoSetupMcp();
   startCdpMonitoring(); // CDP-based tile state monitoring
-  startPoolTick(); // periodic self-heal re-check (drives the 30s drop-confirm)
+  startPoolTick(); // periodic self-heal re-check (drives the 10s drop-confirm)
   setWorkspaceInfo(getWorkspaceName(), getWorkspacePath() || "");
   // Let a remote client (Obsidian) pick the routed agent via the same flow the
   // panel uses, so the selection + webview stay consistent everywhere.
@@ -1361,8 +1607,9 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
     }
   }
 
-  if (autoReconnect && !workflowProc) {
-    const target = pickReconnect(dropped, agentStats, now, RECONNECT_DEBOUNCE_MS);
+  if (anyKeepConnected() && !workflowProc) {
+    const keptDropped = dropped.filter((id) => keepConnectedAgents.has(id));
+    const target = pickReconnect(keptDropped, agentStats, now, RECONNECT_DEBOUNCE_MS);
     if (target) {
       const s = agentStats.get(target);
       if (s) {
@@ -1373,7 +1620,7 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
       postWorkflow({
         type: "workflowOutput",
         stream: "stdout",
-        line: `[jefr] auto-reconnect: agent ${target.slice(0, 8)} dropped — re-priming its tile`,
+        line: `[jefr] keep: agent ${target.slice(0, 8)} dropped — re-priming its tile`,
       });
       runWorkflow({ reconnect: true, agentId: target, model: poolModel });
     }
@@ -1383,6 +1630,7 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
   const agentsWithDropped = agents.map((a) => ({
     ...a,
     dropped: !a.connected && droppedSet.has(a.id),
+    keepConnected: keepConnectedAgents.has(a.id),
   }));
 
   writeCdpStatusFile(agents);
@@ -1397,9 +1645,9 @@ function pushAgentListFromHeartbeats(cdpFallback = false): void {
       connectMs: agentConnectMs.get(a.id),
     })),
     selected: selectedAgentId || null,
-    autoReconnect,
     targetAgentCount,
     workflowModel: poolModel,
+    skipAutoPhase,
     cdpConnected: cdpFallback ? (lastCdpStatus?.connected ?? false) : false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0,
@@ -1758,6 +2006,7 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           this.pushQueueData();
           lastAgentListJson = undefined; // force a fresh roster on open
           pushAgentList();
+          pushWorkflowModels();
           // The panel can open BEFORE CDP's first successful poll (or a poll that
           // transiently saw 0 tiles), which would leave the roster on the file-
           // heartbeat fallback (only currently-looping agents). Since CDP only
@@ -1811,13 +2060,10 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
         case "selectAgent":
           selectAgent(msg.agentId);
           break;
-        case "setAutoReconnect":
-          autoReconnect = !!msg.enabled;
-          lastAgentListJson = undefined; // force a re-push with the new flag
-          pushAgentList();
-          // Turning it ON should reconcile right away (close any already-dropped
-          // tile + top up) instead of waiting for the next 5s tick.
-          if (autoReconnect) void maintainPool();
+        case "setAgentKeepConnected":
+          if (typeof msg.agentId === "string" && msg.agentId.trim()) {
+            setAgentKeepConnected(msg.agentId.trim(), !!msg.enabled);
+          }
           break;
         case "setTargetAgentCount":
           if (typeof msg.count === "number" && Number.isFinite(msg.count)) {
@@ -1828,6 +2074,15 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           if (typeof msg.model === "string") {
             setPoolModel(msg.model);
           }
+          break;
+        case "setSkipAutoPhase":
+          setSkipAutoPhase(!!msg.enabled);
+          break;
+        case "getWorkflowModels":
+          pushWorkflowModels();
+          break;
+        case "refreshWorkflowModels":
+          refreshWorkflowModelsFromPicker();
           break;
         case "equalizeTiles": {
           if (cdpEnabled) {
@@ -1869,6 +2124,7 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           runWorkflow({
             model: (typeof msg.model === "string" && msg.model.trim()) || poolModel,
             keepTiles: true,
+            skipAuto: skipAutoPhase,
           });
           break;
         }
@@ -1886,6 +2142,18 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
         case "deleteAgent": {
           const aid = typeof msg.agentId === "string" ? msg.agentId.trim() : "";
           if (!aid) break;
+          const notifyDelete = (
+            status: "closing" | "closed" | "failed",
+            error?: string,
+          ) => {
+            mainPanel?.webview.postMessage({
+              type: "agentDeleteStatus",
+              agentId: aid,
+              status,
+              ...(error ? { error } : {}),
+            });
+          };
+          notifyDelete("closing");
           // Closing the tile a workflow is actively spawning/re-priming has to
           // stop that workflow too — otherwise the script keeps driving a tile
           // that's about to vanish and the spawn appears to "not stop".
@@ -1929,6 +2197,7 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
               stream: "stderr",
               line: `[jefr] Failed to close tile for agent ${aid.slice(0, 8)}; keeping it in the roster.`,
             });
+            notifyDelete("failed", "Could not close tile — try again or close it in Cursor");
             lastAgentListJson = undefined;
             pushAgentList();
             break;
@@ -1936,7 +2205,9 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
           dlog(`deleted agent ${aid.slice(0, 8)} (tile closed)`);
           tileStateManager.forgetAgent(aid);
           agentStats.delete(aid);
+          forgetKeepConnected(aid);
           forgetAgentDir(aid);
+          notifyDelete("closed");
           if (aid === selectedAgentId) {
             selectAgent(undefined);
           } else {
@@ -2070,6 +2341,8 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
               // Default to keeping existing tiles so spawns accumulate agents;
               // the UI can pass keepTiles:false to force the clean-collapse spawn.
               keepTiles: msg.keepTiles !== false,
+              skipAuto:
+                typeof msg.skipAuto === "boolean" ? msg.skipAuto : skipAutoPhase,
             });
           } catch (e) {
             postWorkflow({
@@ -2089,12 +2362,10 @@ class MessengerViewProvider implements vscode.WebviewViewProvider {
                 typeof msg.tile === "number" && Number.isInteger(msg.tile)
                   ? msg.tile
                   : undefined,
+              model: poolModel,
               opusPrompt: msg.opusPrompt,
               maxSecs: msg.maxSecs,
               enterInterval: msg.enterInterval,
-              model:
-                (typeof msg.model === "string" && msg.model.trim()) ||
-                poolModel,
             });
           } catch (e) {
             postWorkflow({

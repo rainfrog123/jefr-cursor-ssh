@@ -1726,14 +1726,14 @@ input:focus-visible {
 	flex-direction: column;
 	overflow-y: auto;
 	order: 5;
-	gap: 8px;
+	gap: 10px;
 	padding: 0 2px 12px;
 	scrollbar-width: thin;
 	scrollbar-color: color-mix(in srgb, var(--fg) 8%, transparent) transparent;
 }
 
-/* ========== Agent workflow runner (General tab) ========== */
-.workflow-card {
+/* Shared section chrome on General tab */
+.general-section {
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
@@ -1741,7 +1741,30 @@ input:focus-visible {
 	background: var(--input-bg, rgba(127,127,127,0.06));
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	margin-bottom: 4px;
+}
+.general-section-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.general-section-title {
+	font-family: var(--font-ui);
+	font-size: var(--text-base);
+	font-weight: 700;
+	color: var(--fg);
+}
+.general-section-head .btn {
+	margin-left: auto;
+}
+.general-section-empty {
+	font-size: var(--text-xs);
+	color: var(--fg-muted);
+	line-height: 1.4;
+}
+
+/* ========== Agent workflow runner (General tab) ========== */
+.workflow-card {
+	margin-bottom: 0;
 }
 
 .workflow-head {
@@ -1839,6 +1862,20 @@ input:focus-visible {
 .workflow-keep-tiles input {
 	cursor: pointer;
 }
+.workflow-opt {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: var(--text-xs);
+	color: var(--fg-secondary);
+	cursor: pointer;
+	user-select: none;
+	padding: 4px 0;
+}
+.workflow-opt input {
+	cursor: pointer;
+	margin: 0;
+}
 .workflow-model-label {
 	font-size: var(--text-xs);
 	font-weight: 600;
@@ -1862,10 +1899,34 @@ input:focus-visible {
 	box-shadow: 0 0 0 3px rgba(124,107,245,0.15);
 }
 
+.workflow-models-error {
+	margin: 2px 0 4px;
+	font-size: var(--text-xs);
+	color: var(--danger, #e06c75);
+	line-height: 1.35;
+	word-break: break-word;
+}
+
 .workflow-row {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	flex-wrap: wrap;
+}
+.workflow-row-model {
+	flex-wrap: nowrap;
+}
+.workflow-row-model .workflow-model-select {
+	flex: 1;
+	min-width: 0;
+}
+.workflow-row-actions .btn-primary {
+	min-width: 64px;
+}
+.workflow-row-options {
+	gap: 14px;
+	padding-top: 2px;
+	border-top: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
 }
 .workflow-row-end {
 	justify-content: flex-end;
@@ -1895,17 +1956,41 @@ input:focus-visible {
 .workflow-line.err {
 	color: var(--danger, #ef5350);
 }
+.workflow-line.wf-stage {
+	color: var(--fg);
+	font-weight: 600;
+	margin-top: 6px;
+}
+.workflow-line.wf-stage:first-child {
+	margin-top: 0;
+}
+.workflow-line.wf-ok {
+	color: var(--success, #98c379);
+}
+.workflow-line.wf-warn {
+	color: var(--warning, #e5c07b);
+}
+.workflow-line.wf-err {
+	color: var(--danger, #ef5350);
+}
+.workflow-line.wf-meta {
+	color: var(--fg-muted);
+}
+.workflow-line.wf-detail {
+	color: var(--fg-secondary);
+}
+.btn.is-active {
+	border-color: var(--accent, #61afef);
+	color: var(--accent, #61afef);
+}
 
 /* ===== Debug log (General tab) ===== */
 .debug-card {
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-	padding: 10px 12px;
-	border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-	border-radius: 12px;
-	background: var(--surface-1);
-	box-shadow: var(--shadow-card);
+	/* When used as a general-section, inherit shared chrome; keep legacy look otherwise. */
+}
+.general-section.debug-card {
+	/* shared .general-section already provides padding/border/bg */
+	box-shadow: none;
 }
 .debug-head {
 	display: flex;
@@ -1975,7 +2060,35 @@ input:focus-visible {
 	background: color-mix(in srgb, var(--danger) 18%, transparent);
 	border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
+.btn-danger.is-closing,
+.btn-danger:disabled {
+	opacity: 0.65;
+	cursor: wait;
+}
 
+.agent-slot.is-closing {
+	opacity: 0.72;
+}
+.agent-timing.agent-closing {
+	color: var(--vscode-descriptionForeground, #888);
+	font-style: italic;
+}
+.agent-timing.agent-close-error,
+.agent-close-error-banner {
+	color: var(--danger);
+}
+.agent-close-error-banner {
+	margin: 0 0 8px;
+	padding: 6px 10px;
+	font-size: 12px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--danger) 10%, transparent);
+	border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.usage-section .usage-loading {
+	padding: 16px 8px;
+}
 .usage-loading {
 	display: flex;
 	flex-direction: column;
@@ -2061,6 +2174,17 @@ input:focus-visible {
 }
 
 /* ── Injection status ── */
+.token-section .inject-status {
+	margin-top: 0;
+	padding-top: 0;
+	border-top: none;
+}
+.token-section .inject-status-dot {
+	margin-left: auto;
+}
+.token-status-label {
+	flex-shrink: 0;
+}
 .inject-status {
 	display: flex;
 	align-items: center;
@@ -2080,9 +2204,27 @@ input:focus-visible {
 	box-shadow: 0 0 4px rgba(245,158,11,0.3);
 	flex-shrink: 0;
 }
+.inject-status-dot.on {
+	background: #22c55e;
+	box-shadow: 0 0 4px rgba(34,197,94,0.35);
+}
+
+.inject-status .card-input {
+	flex: 1;
+	min-width: 0;
+}
 
 .inject-status .btn {
-	margin-left: auto;
+	margin-left: 0;
+	flex-shrink: 0;
+}
+
+.usage-section .usage-header-card {
+	margin: 0;
+	padding: 0;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
 
 .usage-member-badge {
@@ -2652,68 +2794,95 @@ input:focus-visible {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
-	padding: 8px 12px;
-	border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-	border-radius: 12px;
-	background: var(--surface-1);
-	box-shadow: var(--shadow-card);
+	padding: 6px 2px 2px;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
 }
 
 .agents-hero-title {
-	font-size: var(--text-sm);
+	font-size: var(--text-base);
 	font-weight: 700;
-	margin-bottom: 2px;
+	margin: 0;
 	color: var(--fg);
 	letter-spacing: -0.01em;
-}
-
-.agents-hero-stats {
-	display: flex;
-	gap: 6px;
 	flex-shrink: 0;
 }
 
-.agents-stat {
+.agents-pills {
 	display: flex;
-	flex-direction: column;
 	align-items: center;
-	justify-content: center;
-	min-width: 40px;
-	padding: 4px 7px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--bg) 82%, var(--input-bg));
-	border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+	gap: 6px;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	min-width: 0;
 }
 
-.agents-stat-num {
+.agents-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	border-radius: 999px;
 	font-size: var(--text-xs);
-	font-weight: 700;
+	color: var(--fg-secondary);
+	background: color-mix(in srgb, var(--fg) 6%, transparent);
+	border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+	white-space: nowrap;
+	line-height: 1.2;
+}
+.agents-pill strong {
 	font-family: var(--font-mono);
+	font-weight: 700;
 	color: var(--fg);
+	font-size: var(--text-xs);
 }
-
-.agents-stat-label {
-	font-size: 9px;
+.agents-pill.cdp {
+	gap: 5px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+}
+.agents-pill-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--warning, #e5c07b);
+	flex-shrink: 0;
+}
+.agents-pill.cdp.on {
+	color: var(--success, #98c379);
+	border-color: color-mix(in srgb, var(--success, #98c379) 35%, transparent);
+	background: color-mix(in srgb, var(--success, #98c379) 10%, transparent);
+}
+.agents-pill.cdp.on .agents-pill-dot {
+	background: var(--success, #98c379);
+	box-shadow: 0 0 4px color-mix(in srgb, var(--success, #98c379) 50%, transparent);
+}
+.agents-pill.cdp.off {
 	color: var(--fg-muted);
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
 }
-
-.agents-stat.cdp.on .agents-stat-num { color: var(--success); }
-.agents-stat.cdp.off .agents-stat-num { color: var(--warning); }
 
 .agents-toolbar {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 6px;
 	flex-wrap: wrap;
-	padding: 1px 2px;
+	padding: 6px 8px;
 	min-height: 30px;
+	border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+	border-radius: 10px;
+	background: var(--surface-1, var(--input-bg, rgba(127,127,127,0.06)));
 }
 
 .agents-toolbar .btn {
-	padding: 5px 10px;
+	padding: 5px 9px;
 	border-radius: 7px;
+}
+
+.agents-toolbar-spacer {
+	flex: 1 1 8px;
+	min-width: 4px;
 }
 
 .agents-slots-hint {
@@ -2723,21 +2892,24 @@ input:focus-visible {
 	flex-shrink: 0;
 }
 
-.agents-pool-controls {
-	display: flex;
+.agents-toolbar .agents-auto {
+	display: inline-flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	flex-wrap: wrap;
+	gap: 5px;
+	font-size: var(--text-xs);
+	color: var(--fg-secondary);
+	cursor: pointer;
+	user-select: none;
+	white-space: nowrap;
+	margin: 0;
 }
-
-.agents-pool-controls .agents-auto {
-	flex: 1 1 auto;
-	min-width: 0;
+.agents-toolbar .agents-auto input {
+	margin: 0;
+	cursor: pointer;
 }
-
-.agents-pool-controls .agents-slots-hint {
-	margin-left: 0;
+.agents-toolbar .agents-auto-muted {
+	cursor: default;
+	color: var(--fg-muted);
 }
 
 .agents-target {
@@ -2766,8 +2938,6 @@ input:focus-visible {
 	color: var(--fg-primary);
 }
 
-/* Standalone control row — paired with the free-slot hint in
-   .agents-pool-controls so it never overlaps the agent cards below. */
 .agents-auto {
 	display: flex;
 	align-items: center;
@@ -2791,6 +2961,7 @@ input:focus-visible {
 	color: var(--fg-muted);
 	opacity: 0.85;
 }
+
 
 .agents-slots {
 	display: flex;
@@ -2860,12 +3031,8 @@ input:focus-visible {
 	display: flex;
 	gap: 3px;
 	flex-shrink: 0;
-	opacity: 0.72;
-	transition: opacity 0.15s;
-}
-
-.agent-slot:hover .agent-slot-actions,
-.agent-slot.filled.main .agent-slot-actions {
+	align-items: center;
+	/* Keep is always on the card — don't hide actions behind hover. */
 	opacity: 1;
 }
 
@@ -2874,6 +3041,41 @@ input:focus-visible {
 	height: 28px;
 	padding: 0 8px;
 	border-radius: 7px;
+}
+
+/* Per-tile Keep: square pin toggle, same footprint as ⤢ / × */
+.agent-keep-btn {
+	min-width: 28px !important;
+	width: 28px;
+	height: 28px;
+	padding: 0 !important;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-descriptionForeground, #888);
+}
+
+.agent-keep-btn .agent-keep-icon {
+	display: block;
+	flex-shrink: 0;
+}
+
+.agent-keep-btn.on {
+	color: var(--vscode-button-background, #0e639c);
+	border-color: color-mix(
+		in srgb,
+		var(--vscode-button-background, #0e639c) 55%,
+		transparent
+	);
+	background: color-mix(
+		in srgb,
+		var(--vscode-button-background, #0e639c) 14%,
+		transparent
+	);
+}
+
+.agent-detail-actions .agent-keep-btn {
+	width: 28px;
 }
 
 .agent-details-btn {

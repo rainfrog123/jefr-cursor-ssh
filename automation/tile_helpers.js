@@ -216,6 +216,15 @@ function isOpusExtraHighFastLabel(label) {
   return /Opus 4\.8/i.test(label) && /Extra High Fast/i.test(label);
 }
 
+/** Map UI / legacy pool labels to a row that exists in the live picker. */
+function resolveModelLabel(label) {
+  const t = String(label || '').trim();
+  if (!t) return t;
+  // Legacy pool option — no longer a picker row on current Cursor builds.
+  if (/^Opus 4\.5/i.test(t)) return 'Opus 4.8 1M Extra High Fast';
+  return t;
+}
+
 /** Select Opus 4.8 with 1M context, a thinking tier (High | Extra High), and Fast.
  *  `pin` is an agentId string (preferred) or numeric tile index — the live index
  *  is re-resolved from agentId before every focus/picker action so we never
@@ -531,12 +540,129 @@ function idxByAgentId(id) {
   return tiles().findIndex((t) => agentIdOfTile(t) === id);
 }
 
+function menuLabelText(el) {
+  return (el.textContent || '').trim().replace(/\s+/g, ' ').replace(/\s*Edit\s*$/i, '').trim();
+}
+
+function labelMatchesTrigger(label, trigger) {
+  if (!label || !trigger) return false;
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escaped, 'i').test(trigger);
+}
+
+async function clickMenuRow(row) {
+  const target =
+    row.querySelector('.ui-model-picker__item-content') ||
+    row.querySelector('.ui-model-picker__item-label') ||
+    row;
+  const fire = (el, type) =>
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+  fire(target, 'pointerdown');
+  fire(target, 'mousedown');
+  fire(target, 'pointerup');
+  fire(target, 'mouseup');
+  target.click();
+  await sleep(500);
+}
+
+/** Select a saved-model row from the compact (Auto-off) picker by full label. */
+async function selectConfiguredLabelByAgent(agentId, modelLabel) {
+  const label = resolveModelLabel(String(modelLabel || '').trim());
+  if (!label || /^auto$/i.test(label)) return selectModelByAgent(agentId, /^auto/i);
+
+  let idx = idxByAgentId(agentId);
+  if (idx < 0) return { error: 'tile not found for agentId', agentId };
+  focusEditorIn(idx);
+  await sleep(150);
+  const triggerText = () =>
+    modelTriggerIn(idxByAgentId(agentId))
+      ?.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';
+
+  const before = triggerText();
+  if (labelMatchesTrigger(label, before)) {
+    return { ok: true, model: before, skipped: true, idx, agentId };
+  }
+
+  const openMenu = async () => {
+    dismissMenus();
+    await sleep(150);
+    idx = idxByAgentId(agentId);
+    if (idx < 0) return false;
+    focusEditorIn(idx);
+    await sleep(120);
+    const trig = modelTriggerIn(idx);
+    if (!trig) return false;
+    trig.click();
+    await sleep(550);
+    return true;
+  };
+
+  const findRow = () => {
+    const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const full = visMenu().find(
+      (e) =>
+        e.getAttribute('role') === 'menuitem' &&
+        e.querySelector('.ui-model-picker__item-content') &&
+        re.test(e.querySelector('.ui-model-picker__item-content')?.textContent || ''),
+    );
+    if (full) return full;
+    return visMenu().find(
+      (e) => e.getAttribute('role') === 'menuitem' && re.test(menuLabelText(e)),
+    );
+  };
+
+  let lastOptions = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!(await openMenu())) return { error: 'no picker', agentId };
+
+    const autoRow = visMenu().find((e) => /^auto/i.test(menuLabelText(e)));
+    const sw = autoRow?.querySelector('button,[role="switch"],input[type="checkbox"]');
+    if (sw) {
+      const on =
+        sw.getAttribute('aria-checked') === 'true' || sw.getAttribute('data-state') === 'checked';
+      if (on) {
+        sw.click();
+        await sleep(600);
+        dismissMenus();
+        await sleep(200);
+        if (!(await openMenu())) return { error: 'no picker after auto off', agentId };
+      }
+    }
+
+    const row = findRow();
+    lastOptions = visMenu().map((e) => menuLabelText(e)).filter(Boolean);
+    if (!row) {
+      dismissMenus();
+      await sleep(200);
+      continue;
+    }
+    await clickMenuRow(row);
+    dismissMenus();
+    await sleep(250);
+    const after = triggerText();
+    if (labelMatchesTrigger(label, after)) {
+      return { ok: true, before, after, idx: idxByAgentId(agentId), agentId, via: 'configuredRow' };
+    }
+  }
+
+  return {
+    error: 'not selected',
+    before,
+    after: triggerText(),
+    agentId,
+    options: lastOptions,
+  };
+}
+
 /** Route a full picker label to the right agent-pinned selector. */
 async function selectTargetModelByAgent(agentId, modelLabel) {
-  const label = String(modelLabel || '').trim();
-  if (isOpusExtraHighFastLabel(label)) return selectOpus48ExtraHighFastByAgent(agentId);
-  if (isOpusHighFastLabel(label)) return selectOpus48HighFastByAgent(agentId);
-  if (/GPT-5\.5.*1M High/i.test(label)) return selectGpt55HighByAgent(agentId);
+  const label = resolveModelLabel(String(modelLabel || '').trim());
+  if (!label || /^auto$/i.test(label)) return selectModelByAgent(agentId, /^auto/i);
+
+  // Saved-model rows in the compact (Auto-off) menu — current Cursor default UI.
+  const direct = await selectConfiguredLabelByAgent(agentId, label);
+  if (!direct.error) return direct;
+
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return selectModelByAgent(agentId, new RegExp(escaped, 'i'));
 }
@@ -547,15 +673,6 @@ async function selectTargetModelByAgent(agentId, modelLabel) {
 async function selectModelByAgent(agentId, namePattern) {
   const re = typeof namePattern === 'string' ? new RegExp(namePattern, 'i') : namePattern;
   const label = typeof namePattern === 'string' ? namePattern : (re.source || '');
-  if (isOpusExtraHighFastLabel(label)) {
-    return selectOpus48ExtraHighFastByAgent(agentId);
-  }
-  if (isOpusHighFastLabel(label)) {
-    return selectOpus48HighFastByAgent(agentId);
-  }
-  if (/GPT-5\.5.*1M High/i.test(label)) {
-    return selectGpt55HighByAgent(agentId);
-  }
   const triggerText = () =>
     modelTriggerIn(idxByAgentId(agentId))
       ?.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';

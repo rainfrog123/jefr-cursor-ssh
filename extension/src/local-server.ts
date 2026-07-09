@@ -26,7 +26,83 @@ import {
   readSelectedAgentId,
   writeSelectedAgentId,
   listLiveAgents,
+  type LiveAgent,
 } from "./messenger";
+
+const CDP_STATUS_FILE = path.join(os.homedir(), ".moyu-message", "cdp-status.json");
+
+/** In-memory model labels pushed by the extension's CDP monitor (preferred over
+ *  re-reading cdp-status.json on every WebSocket poll). */
+const bridgeAgentModels = new Map<string, string>();
+
+/** Update the model map the Obsidian bridge reads when building agent rows. */
+export function setBridgeAgentModels(
+  agents: ReadonlyArray<{ id: string; model?: string }>,
+): void {
+  bridgeAgentModels.clear();
+  for (const a of agents) {
+    const id = a.id && String(a.id).trim();
+    const model = a.model && String(a.model).trim();
+    if (id && model) bridgeAgentModels.set(id, model);
+  }
+}
+
+/** Read per-agent model labels written by the extension's CDP monitor. */
+function readCdpAgentModels(): Map<string, string> {
+  const map = new Map<string, string>(bridgeAgentModels);
+  if (map.size > 0) return map;
+  try {
+    const data = JSON.parse(fs.readFileSync(CDP_STATUS_FILE, "utf-8")) as {
+      agents?: { id?: string; model?: string }[];
+    };
+    for (const a of data.agents || []) {
+      const id = a.id && String(a.id).trim();
+      const model = a.model && String(a.model).trim();
+      if (id && model) map.set(id, model);
+    }
+  } catch {
+    // best-effort — CDP file may not exist yet
+  }
+  return map;
+}
+
+/** Agent ids CDP currently sees (null = no CDP filter — heartbeat-only fallback). */
+function readCdpVisibleAgentIds(): Set<string> | null {
+  if (bridgeAgentModels.size > 0) {
+    return new Set(bridgeAgentModels.keys());
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(CDP_STATUS_FILE, "utf-8")) as {
+      cdpConnected?: boolean;
+      agents?: { id?: string }[];
+    };
+    if (!data.cdpConnected) return null;
+    const agents = data.agents || [];
+    if (agents.length === 0) return null;
+    const ids = agents
+      .map((a) => (a.id && String(a.id).trim()) || "")
+      .filter(Boolean);
+    return ids.length > 0 ? new Set(ids) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Live agents enriched with model names for Obsidian / remote clients. */
+function agentsForBridge(): LiveAgent[] {
+  const models = readCdpAgentModels();
+  const allow = readCdpVisibleAgentIds();
+  let live = listLiveAgents();
+  // A closed tile's MCP ticker can keep its heartbeat warm for minutes — when
+  // CDP can see which tiles exist, trust that over orphaned heartbeats.
+  if (allow) {
+    live = live.filter((a) => allow.has(a.id));
+  }
+  return live.map((a) => {
+    const model = models.get(a.id);
+    return model ? { ...a, model } : a;
+  });
+}
 
 /** Decode a `data:` URL into a temp file and queue it as an image message.
  *  Returns true if it was handled. Used for images pasted in the Obsidian plugin. */
@@ -308,7 +384,7 @@ function handleHttp(req: IncomingMessage, res: ServerResponse): void {
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
         agent: getAgentStatusFor(aid),
-        agents: listLiveAgents(),
+        agents: agentsForBridge(),
         selectedAgentId: aid || null,
         port: serverPort,
       })
@@ -733,7 +809,7 @@ function buildPushState() {
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
     agent: getAgentStatusFor(aid),
-    agents: listLiveAgents(),
+    agents: agentsForBridge(),
     selectedAgentId: aid || null,
     port: serverPort,
   };

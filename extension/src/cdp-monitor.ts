@@ -382,6 +382,9 @@ export class CdpMonitor extends EventEmitter {
   /** Focus the composer of the tile whose agentId matches. Returns true on success. */
   async focusAgent(agentId: string): Promise<boolean> {
     if (!this.session) return false;
+    // Prefer focusing the tip-tap editor so Ctrl+W targets this tile. Dropped /
+    // dead tiles often have no usable editor — fall back to clicking the tile
+    // chrome (or its menu trigger) so the pane still receives focus.
     const js = `
 (function() {
   const TARGET = ${JSON.stringify(agentId)};
@@ -413,13 +416,37 @@ export class CdpMonitor extends EventEmitter {
       /send follow-?up/i.test((e.querySelector('[data-placeholder]')?.getAttribute('data-placeholder')) ||
         e.getAttribute('data-placeholder') || '');
     const ed = eds.find(isFu) || eds[eds.length - 1];
-    if (ed) { ed.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); ed.focus(); ed.click(); return true; }
+    if (ed) {
+      ed.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      ed.focus();
+      ed.click();
+      return { ok: true, via: 'editor' };
+    }
+    const trig = t.querySelector('[aria-label="Tile actions"],.glass-agent-conversation-tiling__menu-trigger');
+    const hit = trig || t;
+    const r = hit.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return { ok: false };
+    return {
+      ok: true,
+      via: 'chrome',
+      x: r.left + Math.min(r.width / 2, 24),
+      y: r.top + Math.min(r.height / 2, 18),
+    };
   }
-  return false;
+  return { ok: false };
 })()
     `;
     try {
-      return !!(await this.session.evaluate(js, false));
+      const res = (await this.session.evaluate(js, false)) as
+        | { ok?: boolean; via?: string; x?: number; y?: number }
+        | false
+        | null;
+      if (!res || !res.ok) return false;
+      if (res.via === "chrome" && typeof res.x === "number" && typeof res.y === "number") {
+        await this.clickAt(res.x, res.y);
+        await this.sleep(80);
+      }
+      return true;
     } catch {
       return false;
     }
@@ -483,6 +510,8 @@ export class CdpMonitor extends EventEmitter {
     }
     return null;
   }
+  // Empty tiling = last tile closed. Also treat as gone if TARGET is absent.
+  if (tiles.length === 0) return true;
   return !tiles.some(t => agentIdOf(t) === TARGET);
 })()
     `;
@@ -523,7 +552,8 @@ export class CdpMonitor extends EventEmitter {
     return actions[idx] || null;
   }
   const tiles = tileRoots();
-  if (tiles.length <= 1) return false;
+  // Allow closing the last remaining tile — Cursor may still expose Close / Ctrl+W.
+  // (Previously we bailed when tiles.length <= 1, which made the red × look dead.)
   let idx = -1;
   for (let i = 0; i < tiles.length; i++) {
     if (agentIdOf(tiles[i]) === TARGET) { idx = i; break; }
@@ -565,7 +595,9 @@ export class CdpMonitor extends EventEmitter {
     }
     return null;
   }
-  return !tileRoots().some(t => agentIdOf(t) === TARGET);
+  const roots = tileRoots();
+  if (roots.length === 0) return true;
+  return !roots.some(t => agentIdOf(t) === TARGET);
 })()
     `;
     try {
@@ -598,7 +630,8 @@ export class CdpMonitor extends EventEmitter {
 (function() {
   const IDX = ${index};
   const tiles = [...document.querySelectorAll('.glass-agent-conversation-tiling__tile')];
-  if (tiles.length <= 1 || IDX >= tiles.length) return false;
+  // Allow closing the last tile (same rationale as closeAgentTile).
+  if (IDX >= tiles.length) return false;
   function tileMenuTrigger(tile, idx) {
     const inTile = tile?.querySelector('[aria-label="Tile actions"],.glass-agent-conversation-tiling__menu-trigger');
     if (inTile) return inTile;
@@ -639,7 +672,8 @@ export class CdpMonitor extends EventEmitter {
         return false;
       }
       await this.clickAt(close.x, close.y);
-      // Poll until the tile count actually drops below the pre-close count.
+      // Poll until the tile count actually drops below the pre-close count
+      // (including 1 → 0 when closing the last tile).
       const droppedJs = `document.querySelectorAll('.glass-agent-conversation-tiling__tile').length < ${before}`;
       return !!(await this.pollEval(droppedJs, 1200, 60));
     } catch {
@@ -829,10 +863,29 @@ export class CdpMonitor extends EventEmitter {
     return false;
   }
 
+  // Model label from the LAST composer on the tile. A tile can host multiple
+  // chat pickers; querySelector's first match is often a stale "Auto" from an
+  // earlier composer, while the live follow-up is last.
+  function modelOf(t) {
+    const eds = [...t.querySelectorAll('.tiptap.ProseMirror.ui-prompt-input-editor__input')]
+      .filter((e) => !e.closest('.prompt-edit-input'));
+    const ed = eds[eds.length - 1];
+    const root = ed
+      ? (ed.closest('.ui-prompt-input') || ed.closest('.agent-prompt-input-root'))
+      : null;
+    const fromComposer = root?.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim();
+    if (fromComposer) return fromComposer;
+    const texts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+      .filter((el) => !el.closest('.prompt-edit-input'));
+    return texts[texts.length - 1]?.textContent?.trim() || '';
+  }
+
   return tiles.map((t, i) => {
-    const submit = t.querySelector('.ui-prompt-input-submit-button');
+    const submits = [...t.querySelectorAll('.ui-prompt-input-submit-button')]
+      .filter((b) => !b.closest('.prompt-edit-input'));
+    const submit = submits[submits.length - 1];
     const aria = submit?.getAttribute('aria-label') || '';
-    const generating = submit?.getAttribute('data-state') === 'stop' || /stop generation/i.test(aria);
+    const generating = submits.some((b) => b.getAttribute('data-state') === 'stop') || /stop generation/i.test(aria);
 
     const sh = t.querySelector('.ui-collapsible-action.ui-collapsible-shimmer')?.textContent || '';
     const planning = /planning\\s+next\\s+move/i.test(sh);
@@ -861,7 +914,11 @@ export class CdpMonitor extends EventEmitter {
     // prompt still in its composer = the agent is gone, even with no "Worked for…"
     // stamp. Fingerprint-scoped to the spawn prompts so a human-typed draft can't
     // trip it; only meaningful for a previously-connected agent (gated in tile-state).
-    const draftEl = t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror') || t.querySelector('.tiptap.ProseMirror');
+    const draftEds = [...t.querySelectorAll('.tiptap.ProseMirror')]
+      .filter((e) => !e.closest('.prompt-edit-input'));
+    const draftEl = draftEds[draftEds.length - 1]
+      || t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror')
+      || t.querySelector('.tiptap.ProseMirror');
     const draftText = ((draftEl && draftEl.textContent) || '').trim();
     const draftPending =
       !generating && !planning && !mcpRunning && !toolWorking &&
@@ -875,7 +932,7 @@ export class CdpMonitor extends EventEmitter {
       !generating && !planning && !mcpRunning && !toolWorking &&
       /standing\\s+by|waiting for your next instruction/i.test(tail);
 
-    const model = t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';
+    const model = modelOf(t);
 
     // Billing-blocked banner: "Payment failed … Manage Billing" (a .ui-short-tray
     // with a Manage Billing button). Scoped to short tray/button text so a chat

@@ -16,16 +16,27 @@
   // use last tile (or tile with Auto model)
   let idx = tiles().length - 1;
   let target = tileAt(idx);
-  const autoIdx = tiles().findIndex(t =>
-    t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() === 'Auto');
+  const lastModelText = (t) => {
+    const texts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+      .filter((el) => !el.closest('.prompt-edit-input'));
+    return texts[texts.length - 1]?.textContent?.trim() || '';
+  };
+  const lastModelTrigger = (t) => {
+    const all = [...t.querySelectorAll('.ui-model-picker__trigger')]
+      .filter((tr) => !tr.closest('.prompt-edit-input'));
+    return all[all.length - 1] || null;
+  };
+  const autoIdx = tiles().findIndex(t => lastModelText(t) === 'Auto');
   if (autoIdx >= 0) { idx = autoIdx; target = tileAt(idx); }
 
-  const ed = target?.querySelector('.tiptap.ProseMirror.ui-prompt-input-editor__input');
+  const eds = [...(target?.querySelectorAll('.tiptap.ProseMirror.ui-prompt-input-editor__input') || [])]
+    .filter((e) => !e.closest('.prompt-edit-input'));
+  const ed = eds[eds.length - 1];
   if (!ed) return { error: 'no editor', idx };
   ed.focus(); ed.click();
   await sleep(80);
 
-  const mt = target.querySelector('.ui-model-picker__trigger');
+  const mt = lastModelTrigger(target);
   if (mt && mt.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() !== 'Auto') {
     mt.click(); await sleep(250);
     const auto = [...document.querySelectorAll('[role^="menuitem"],[role="option"]')]

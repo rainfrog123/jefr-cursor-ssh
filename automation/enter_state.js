@@ -34,7 +34,11 @@
     return {
       i,
       agentId: (agentIdOf(t) || '').slice(0, 8),
-      model: t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '',
+      model: (() => {
+        const texts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+          .filter((el) => !el.closest('.prompt-edit-input'));
+        return texts[texts.length - 1]?.textContent?.trim() || '';
+      })(),
       submitState: submit?.getAttribute('data-state') || null,
       submitAria: submit?.getAttribute('aria-label') || null,
       submitDisabled: submit ? (submit.disabled || submit.getAttribute('aria-disabled') === 'true') : null,

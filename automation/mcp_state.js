@@ -13,7 +13,9 @@
     const planning = /planning\s+next\s+move/i.test(shimmer);
     const tail = (t.innerText || '').replace(/\s+/g, ' ').trim().slice(-400);
     const workedFor = /worked for\s+[\dhms ]+/i.test(tail);
-    const model = t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || null;
+    const modelTexts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+      .filter((el) => !el.closest('.prompt-edit-input'));
+    const model = modelTexts[modelTexts.length - 1]?.textContent?.trim() || null;
 
     let mcp;
     if (generating || planning) mcp = 'alive';            // blocked in check_messages

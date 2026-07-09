@@ -1,19 +1,45 @@
 // Shared tile status helpers (included inline or via evaluate)
+function cursorCleanLabel(t) {
+  return (t || '')
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim() || null;
+}
+
+/** Model label from the LAST composer on the tile (not the first picker). */
+function cursorTileModel(tile) {
+  if (!tile) return null;
+  const eds = [...tile.querySelectorAll('.tiptap.ProseMirror.ui-prompt-input-editor__input')]
+    .filter((ed) => !ed.closest('.prompt-edit-input'));
+  const ed = eds[eds.length - 1];
+  const root = ed
+    ? (ed.closest('.ui-prompt-input') || ed.closest('.agent-prompt-input-root'))
+    : null;
+  const fromComposer = root?.querySelector('.ui-model-picker__trigger-text')?.textContent;
+  if (fromComposer) return cursorCleanLabel(fromComposer);
+  const texts = [...tile.querySelectorAll('.ui-model-picker__trigger-text')]
+    .filter((el) => !el.closest('.prompt-edit-input'));
+  return cursorCleanLabel(texts[texts.length - 1]?.textContent);
+}
+
 function cursorTileStatus(tile) {
   if (!tile) return null;
   const seg = [...tile.querySelectorAll('.glass-chat-status-bar__segment-label')]
-    .map(e => e.textContent?.trim()).filter(Boolean);
-  const follow = tile.querySelector('.agent-panel-followup-status-area')?.textContent?.trim() || '';
+    .map(e => cursorCleanLabel(e.textContent)).filter(Boolean);
+  const follow = cursorCleanLabel(tile.querySelector('.agent-panel-followup-status-area')?.textContent) || '';
   const shimmer = tile.querySelector('.ui-collapsible-action.ui-collapsible-shimmer');
-  const shimmerText = shimmer?.textContent?.trim() || '';
+  const shimmerText = cursorCleanLabel(shimmer?.textContent) || '';
   const planning = /planning\s+next\s+move/i.test(shimmerText);
-  const generating = tile.querySelector('.ui-prompt-input-submit-button[data-state="stop"]') != null;
+  const submits = [...tile.querySelectorAll('.ui-prompt-input-submit-button')]
+    .filter((b) => !b.closest('.prompt-edit-input'));
+  const submit = submits[submits.length - 1] || null;
+  const generating = submits.some((b) => b.getAttribute('data-state') === 'stop');
   return {
-    title: tile.querySelector('.chat-title-tab-title')?.textContent?.trim() || null,
-    model: tile.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || null,
+    title: cursorCleanLabel(tile.querySelector('.chat-title-tab-title')?.textContent),
+    model: cursorTileModel(tile),
     submit: {
-      state: tile.querySelector('.ui-prompt-input-submit-button')?.getAttribute('data-state'),
-      label: tile.querySelector('.ui-prompt-input-submit-button')?.getAttribute('aria-label'),
+      state: submit?.getAttribute('data-state'),
+      label: submit?.getAttribute('aria-label'),
     },
     statusLabels: seg,
     followup: follow,

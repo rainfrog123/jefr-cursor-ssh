@@ -33,7 +33,11 @@
   };
 
   let idx = tiles().findIndex(t =>
-    t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() === 'Auto');
+    (() => {
+      const texts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+        .filter((el) => !el.closest('.prompt-edit-input'));
+      return texts[texts.length - 1]?.textContent?.trim() === 'Auto';
+    })());
   if (idx < 0) idx = tiles().length - 1;
   let target = tileAt(idx);
   const ed = target?.querySelector('.tiptap.ProseMirror.ui-prompt-input-editor__input');

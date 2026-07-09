@@ -4845,6 +4845,62 @@ var crypto = __toESM(require("crypto"));
 var fs2 = __toESM(require("fs"));
 var os2 = __toESM(require("os"));
 var path2 = __toESM(require("path"));
+var CDP_STATUS_FILE = path2.join(os2.homedir(), ".moyu-message", "cdp-status.json");
+var bridgeAgentModels = /* @__PURE__ */ new Map();
+function setBridgeAgentModels(agents) {
+  bridgeAgentModels.clear();
+  for (const a of agents) {
+    const id = a.id && String(a.id).trim();
+    const model = a.model && String(a.model).trim();
+    if (id && model)
+      bridgeAgentModels.set(id, model);
+  }
+}
+function readCdpAgentModels() {
+  const map = new Map(bridgeAgentModels);
+  if (map.size > 0)
+    return map;
+  try {
+    const data = JSON.parse(fs2.readFileSync(CDP_STATUS_FILE, "utf-8"));
+    for (const a of data.agents || []) {
+      const id = a.id && String(a.id).trim();
+      const model = a.model && String(a.model).trim();
+      if (id && model)
+        map.set(id, model);
+    }
+  } catch {
+  }
+  return map;
+}
+function readCdpVisibleAgentIds() {
+  if (bridgeAgentModels.size > 0) {
+    return new Set(bridgeAgentModels.keys());
+  }
+  try {
+    const data = JSON.parse(fs2.readFileSync(CDP_STATUS_FILE, "utf-8"));
+    if (!data.cdpConnected)
+      return null;
+    const agents = data.agents || [];
+    if (agents.length === 0)
+      return null;
+    const ids = agents.map((a) => a.id && String(a.id).trim() || "").filter(Boolean);
+    return ids.length > 0 ? new Set(ids) : null;
+  } catch {
+    return null;
+  }
+}
+function agentsForBridge() {
+  const models = readCdpAgentModels();
+  const allow = readCdpVisibleAgentIds();
+  let live = listLiveAgents();
+  if (allow) {
+    live = live.filter((a) => allow.has(a.id));
+  }
+  return live.map((a) => {
+    const model = models.get(a.id);
+    return model ? { ...a, model } : a;
+  });
+}
 function handlePastedImage(dataUrl, caption, target) {
   const match = /^data:image\/([\w.+-]+);base64,(.+)$/.exec(dataUrl || "");
   if (!match)
@@ -5064,7 +5120,7 @@ function handleHttp(req, res) {
         workspace: _workspaceInfo,
         wsClients: wsClients.length,
         agent: getAgentStatusFor(aid),
-        agents: listLiveAgents(),
+        agents: agentsForBridge(),
         selectedAgentId: aid || null,
         port: serverPort
       })
@@ -5442,7 +5498,7 @@ function buildPushState() {
     workspace: _workspaceInfo,
     wsClients: wsClients.length,
     agent: getAgentStatusFor(aid),
-    agents: listLiveAgents(),
+    agents: agentsForBridge(),
     selectedAgentId: aid || null,
     port: serverPort
   };
@@ -6303,13 +6359,35 @@ var CdpMonitor = class extends import_events.EventEmitter {
       /send follow-?up/i.test((e.querySelector('[data-placeholder]')?.getAttribute('data-placeholder')) ||
         e.getAttribute('data-placeholder') || '');
     const ed = eds.find(isFu) || eds[eds.length - 1];
-    if (ed) { ed.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); ed.focus(); ed.click(); return true; }
+    if (ed) {
+      ed.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      ed.focus();
+      ed.click();
+      return { ok: true, via: 'editor' };
+    }
+    const trig = t.querySelector('[aria-label="Tile actions"],.glass-agent-conversation-tiling__menu-trigger');
+    const hit = trig || t;
+    const r = hit.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return { ok: false };
+    return {
+      ok: true,
+      via: 'chrome',
+      x: r.left + Math.min(r.width / 2, 24),
+      y: r.top + Math.min(r.height / 2, 18),
+    };
   }
-  return false;
+  return { ok: false };
 })()
     `;
     try {
-      return !!await this.session.evaluate(js, false);
+      const res = await this.session.evaluate(js, false);
+      if (!res || !res.ok)
+        return false;
+      if (res.via === "chrome" && typeof res.x === "number" && typeof res.y === "number") {
+        await this.clickAt(res.x, res.y);
+        await this.sleep(80);
+      }
+      return true;
     } catch {
       return false;
     }
@@ -6372,6 +6450,8 @@ var CdpMonitor = class extends import_events.EventEmitter {
     }
     return null;
   }
+  // Empty tiling = last tile closed. Also treat as gone if TARGET is absent.
+  if (tiles.length === 0) return true;
   return !tiles.some(t => agentIdOf(t) === TARGET);
 })()
     `;
@@ -6412,7 +6492,8 @@ var CdpMonitor = class extends import_events.EventEmitter {
     return actions[idx] || null;
   }
   const tiles = tileRoots();
-  if (tiles.length <= 1) return false;
+  // Allow closing the last remaining tile \u2014 Cursor may still expose Close / Ctrl+W.
+  // (Previously we bailed when tiles.length <= 1, which made the red \xD7 look dead.)
   let idx = -1;
   for (let i = 0; i < tiles.length; i++) {
     if (agentIdOf(tiles[i]) === TARGET) { idx = i; break; }
@@ -6454,7 +6535,9 @@ var CdpMonitor = class extends import_events.EventEmitter {
     }
     return null;
   }
-  return !tileRoots().some(t => agentIdOf(t) === TARGET);
+  const roots = tileRoots();
+  if (roots.length === 0) return true;
+  return !roots.some(t => agentIdOf(t) === TARGET);
 })()
     `;
     try {
@@ -6482,7 +6565,8 @@ var CdpMonitor = class extends import_events.EventEmitter {
 (function() {
   const IDX = ${index};
   const tiles = [...document.querySelectorAll('.glass-agent-conversation-tiling__tile')];
-  if (tiles.length <= 1 || IDX >= tiles.length) return false;
+  // Allow closing the last tile (same rationale as closeAgentTile).
+  if (IDX >= tiles.length) return false;
   function tileMenuTrigger(tile, idx) {
     const inTile = tile?.querySelector('[aria-label="Tile actions"],.glass-agent-conversation-tiling__menu-trigger');
     if (inTile) return inTile;
@@ -6706,10 +6790,29 @@ var CdpMonitor = class extends import_events.EventEmitter {
     return false;
   }
 
+  // Model label from the LAST composer on the tile. A tile can host multiple
+  // chat pickers; querySelector's first match is often a stale "Auto" from an
+  // earlier composer, while the live follow-up is last.
+  function modelOf(t) {
+    const eds = [...t.querySelectorAll('.tiptap.ProseMirror.ui-prompt-input-editor__input')]
+      .filter((e) => !e.closest('.prompt-edit-input'));
+    const ed = eds[eds.length - 1];
+    const root = ed
+      ? (ed.closest('.ui-prompt-input') || ed.closest('.agent-prompt-input-root'))
+      : null;
+    const fromComposer = root?.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim();
+    if (fromComposer) return fromComposer;
+    const texts = [...t.querySelectorAll('.ui-model-picker__trigger-text')]
+      .filter((el) => !el.closest('.prompt-edit-input'));
+    return texts[texts.length - 1]?.textContent?.trim() || '';
+  }
+
   return tiles.map((t, i) => {
-    const submit = t.querySelector('.ui-prompt-input-submit-button');
+    const submits = [...t.querySelectorAll('.ui-prompt-input-submit-button')]
+      .filter((b) => !b.closest('.prompt-edit-input'));
+    const submit = submits[submits.length - 1];
     const aria = submit?.getAttribute('aria-label') || '';
-    const generating = submit?.getAttribute('data-state') === 'stop' || /stop generation/i.test(aria);
+    const generating = submits.some((b) => b.getAttribute('data-state') === 'stop') || /stop generation/i.test(aria);
 
     const sh = t.querySelector('.ui-collapsible-action.ui-collapsible-shimmer')?.textContent || '';
     const planning = /planning\\s+next\\s+move/i.test(sh);
@@ -6738,7 +6841,11 @@ var CdpMonitor = class extends import_events.EventEmitter {
     // prompt still in its composer = the agent is gone, even with no "Worked for\u2026"
     // stamp. Fingerprint-scoped to the spawn prompts so a human-typed draft can't
     // trip it; only meaningful for a previously-connected agent (gated in tile-state).
-    const draftEl = t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror') || t.querySelector('.tiptap.ProseMirror');
+    const draftEds = [...t.querySelectorAll('.tiptap.ProseMirror')]
+      .filter((e) => !e.closest('.prompt-edit-input'));
+    const draftEl = draftEds[draftEds.length - 1]
+      || t.querySelector('.agent-panel-followup-input .tiptap.ProseMirror')
+      || t.querySelector('.tiptap.ProseMirror');
     const draftText = ((draftEl && draftEl.textContent) || '').trim();
     const draftPending =
       !generating && !planning && !mcpRunning && !toolWorking &&
@@ -6752,7 +6859,7 @@ var CdpMonitor = class extends import_events.EventEmitter {
       !generating && !planning && !mcpRunning && !toolWorking &&
       /standing\\s+by|waiting for your next instruction/i.test(tail);
 
-    const model = t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim() || '';
+    const model = modelOf(t);
 
     // Billing-blocked banner: "Payment failed \u2026 Manage Billing" (a .ui-short-tray
     // with a Manage Billing button). Scoped to short tray/button text so a chat
@@ -7158,9 +7265,38 @@ var idleTimer;
 var lastActivityTime = Date.now();
 var selectedAgentId;
 var lastAgentListJson;
-var autoReconnect = false;
+var keepConnectedAgents = /* @__PURE__ */ new Set();
+var KEEP_CONNECTED_KEY = "jefr.keepConnectedAgents";
 var RECONNECT_DEBOUNCE_MS = 3e4;
-var CONFIRM_DROP_MS = 3e4;
+function anyKeepConnected() {
+  return keepConnectedAgents.size > 0;
+}
+function setAgentKeepConnected(agentId, enabled) {
+  const id = agentId.trim();
+  if (!id)
+    return;
+  if (enabled)
+    keepConnectedAgents.add(id);
+  else
+    keepConnectedAgents.delete(id);
+  void extensionContext?.globalState.update(
+    KEEP_CONNECTED_KEY,
+    [...keepConnectedAgents]
+  );
+  lastAgentListJson = void 0;
+  pushAgentList();
+  if (enabled)
+    void maintainPool();
+}
+function forgetKeepConnected(agentId) {
+  if (!keepConnectedAgents.delete(agentId))
+    return;
+  void extensionContext?.globalState.update(
+    KEEP_CONNECTED_KEY,
+    [...keepConnectedAgents]
+  );
+}
+var CONFIRM_DROP_MS = 1e4;
 var AGENT_FORGET_MS = 5 * 6e4;
 var MAX_RECONNECT_ATTEMPTS = 3;
 var GC_AGENT_DIRS = false;
@@ -7214,7 +7350,7 @@ function startCdpMonitoring() {
     if (status.tiles.some((t) => t.billingBlocked)) {
       hideBillingBannersNow();
     }
-    if (autoReconnect && !workflowProc && !healingTile) {
+    if (anyKeepConnected() && !workflowProc && !healingTile) {
       void maintainPool();
     }
     gcDeadAgentDirs();
@@ -7249,11 +7385,15 @@ function pushAgentListFromCdp() {
   recordConnectTime(agents);
   lastPushedAgentIds = new Set(agents.map((a) => a.id));
   const payload = {
-    agents: agents.map((a) => ({ ...a, connectMs: agentConnectMs.get(a.id) })),
+    agents: agents.map((a) => ({
+      ...a,
+      connectMs: agentConnectMs.get(a.id),
+      keepConnected: keepConnectedAgents.has(a.id)
+    })),
     selected: selectedAgentId || null,
-    autoReconnect,
     targetAgentCount,
     workflowModel: poolModel,
+    skipAutoPhase,
     cdpConnected: lastCdpStatus?.connected ?? false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0
@@ -7267,6 +7407,7 @@ function pushAgentListFromCdp() {
   }
 }
 function writeCdpStatusFile(agents) {
+  setBridgeAgentModels(agents);
   try {
     const statusFile = path3.join(os3.homedir(), ".moyu-message", "cdp-status.json");
     const status = {
@@ -7345,6 +7486,9 @@ function maybeRecordWorkflowConnect(line) {
 function bundledWorkflowScript() {
   return path3.join(__dirname, "..", "..", "automation", "workflow.py");
 }
+function bundledCdpScript() {
+  return path3.join(__dirname, "..", "..", "automation", "cdp.py");
+}
 var resolvedWorkflowScript;
 var resolvedWorkflowScriptFor;
 function resolveWorkflowScript() {
@@ -7360,11 +7504,72 @@ function resolveWorkflowScript() {
   resolvedWorkflowScriptFor = wsKey;
   return resolvedWorkflowScript || null;
 }
+function resolveCdpScript() {
+  const candidates = [bundledCdpScript()];
+  for (const folder of vscode.workspace.workspaceFolders || []) {
+    candidates.push(path3.join(folder.uri.fsPath, "automation", "cdp.py"));
+  }
+  return candidates.find((p) => fs3.existsSync(p)) ?? null;
+}
 var WORKFLOW_DEFAULT_MODEL = "Opus 4.8 1M Extra High Fast";
+var FALLBACK_WORKFLOW_MODELS = [
+  "Auto",
+  "Composer 2.5 Fast",
+  "Opus 4.8 1M Extra High Fast",
+  "GPT-5.5 Extra High Fast",
+  "Fable 5 1M High",
+  "GLM 5.2 High"
+];
 var poolModel = WORKFLOW_DEFAULT_MODEL;
 var WORKFLOW_MODEL_KEY = "jefr.workflowModel";
+var workflowModels = [...FALLBACK_WORKFLOW_MODELS];
+var WORKFLOW_MODELS_KEY = "jefr.workflowModels";
+var workflowModelsRefreshing = false;
+var skipAutoPhase = false;
+var SKIP_AUTO_KEY = "jefr.skipAutoPhase";
+function normalizePoolModel(model) {
+  const m = (model || "").trim();
+  if (/^Opus 4\.5/i.test(m))
+    return WORKFLOW_DEFAULT_MODEL;
+  return m || WORKFLOW_DEFAULT_MODEL;
+}
+function setSkipAutoPhase(enabled) {
+  if (skipAutoPhase === enabled)
+    return;
+  skipAutoPhase = enabled;
+  void extensionContext?.globalState.update(SKIP_AUTO_KEY, enabled);
+  lastAgentListJson = void 0;
+  pushAgentList();
+}
+function pushWorkflowModels(extra) {
+  mainPanel?.webview.postMessage({
+    type: "workflowModels",
+    models: workflowModels,
+    selected: poolModel,
+    refreshing: extra?.refreshing ?? workflowModelsRefreshing,
+    error: extra?.error
+  });
+}
+function cleanModelLabel(m) {
+  return m.replace(/[\u200b\u200c\u200d\ufeff]/g, "").replace(/\s+/g, " ").trim();
+}
+function setWorkflowModelsList(models) {
+  const cleaned = models.map(cleanModelLabel).filter(Boolean);
+  const seen = /* @__PURE__ */ new Set();
+  const next = [];
+  for (const m of cleaned) {
+    if (seen.has(m))
+      continue;
+    seen.add(m);
+    next.push(m);
+  }
+  if (next.length === 0)
+    return;
+  workflowModels = next;
+  void extensionContext?.globalState.update(WORKFLOW_MODELS_KEY, next);
+}
 function setPoolModel(next) {
-  const m = next && next.trim() || WORKFLOW_DEFAULT_MODEL;
+  const m = normalizePoolModel(next);
   if (m === poolModel)
     return;
   poolModel = m;
@@ -7372,6 +7577,101 @@ function setPoolModel(next) {
   dlog(`pool model set to ${m}`);
   lastAgentListJson = void 0;
   pushAgentList();
+  pushWorkflowModels();
+}
+function refreshWorkflowModelsFromPicker() {
+  if (workflowModelsRefreshing)
+    return;
+  const py = resolvePython();
+  const script = resolveCdpScript();
+  if (!py) {
+    pushWorkflowModels({
+      error: "Python not found on PATH (tried python / py / python3)."
+    });
+    dlog("refresh models: python not found", "error");
+    return;
+  }
+  if (!script) {
+    pushWorkflowModels({
+      error: "cdp.py not found \u2014 open the jefr-cursor workspace."
+    });
+    dlog("refresh models: cdp.py not found", "error");
+    return;
+  }
+  workflowModelsRefreshing = true;
+  pushWorkflowModels({ refreshing: true });
+  dlog("refresh models: reading live Cursor picker via CDP\u2026");
+  let proc;
+  try {
+    proc = (0, import_child_process.spawn)(py, [script, "--models", "--tile", "-1"], {
+      cwd: path3.dirname(script),
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" }
+    });
+  } catch (e) {
+    workflowModelsRefreshing = false;
+    const msg = e.message;
+    pushWorkflowModels({ error: `Failed to start CDP: ${msg}` });
+    dlog(`refresh models: spawn failed \u2014 ${msg}`, "error");
+    return;
+  }
+  let stdout = "";
+  let stderr = "";
+  proc.stdout?.on("data", (buf) => {
+    stdout += buf.toString("utf-8");
+  });
+  proc.stderr?.on("data", (buf) => {
+    stderr += buf.toString("utf-8");
+  });
+  proc.on("error", (err) => {
+    workflowModelsRefreshing = false;
+    pushWorkflowModels({ error: err.message });
+    dlog(`refresh models: ${err.message}`, "error");
+  });
+  proc.on("close", (code) => {
+    workflowModelsRefreshing = false;
+    const combined = `${stdout}
+${stderr}`;
+    const resultIdx = combined.lastIndexOf("RESULT");
+    const after = resultIdx >= 0 ? combined.slice(resultIdx + "RESULT".length).trim() : "";
+    const jsonStart = after.indexOf("{");
+    const jsonEnd = after.lastIndexOf("}");
+    const rawJson = jsonStart >= 0 && jsonEnd > jsonStart ? after.slice(jsonStart, jsonEnd + 1) : "";
+    if (!rawJson) {
+      const hint = /cannot reach|remote-debugging-port/i.test(combined) ? "CDP unreachable \u2014 is Cursor on --remote-debugging-port=9222?" : /no workbench|no tile|no model picker/i.test(combined) ? "No agent tile / model picker found \u2014 open an agent chat first." : `cdp.py --models failed (exit ${code}).`;
+      pushWorkflowModels({ error: hint });
+      dlog(`refresh models failed: ${hint}`, "error");
+      if (combined.trim()) {
+        dlog(`refresh models raw: ${combined.trim().slice(0, 400)}`, "warn");
+      }
+      return;
+    }
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (parsed.error) {
+        pushWorkflowModels({ error: String(parsed.error) });
+        dlog(`refresh models: picker error \u2014 ${parsed.error}`, "error");
+        return;
+      }
+      const models = Array.isArray(parsed.models) ? parsed.models.filter((x) => typeof x === "string" && !!x.trim()) : [];
+      if (models.length === 0) {
+        pushWorkflowModels({ error: "Picker returned no models." });
+        dlog("refresh models: empty list", "warn");
+        return;
+      }
+      setWorkflowModelsList(models);
+      dlog(`refresh models: ${models.length} from live picker` + (parsed.current ? ` (tile shows ${parsed.current})` : ""));
+      pushWorkflowModels();
+      postWorkflow({
+        type: "workflowOutput",
+        stream: "stdout",
+        line: `[jefr] refreshed ${models.length} models from Cursor picker`
+      });
+    } catch (e) {
+      pushWorkflowModels({ error: `Bad CDP JSON: ${e.message}` });
+      dlog(`refresh models: parse error \u2014 ${e.message}`, "error");
+    }
+  });
 }
 var DEFAULT_TARGET_AGENT_COUNT = 5;
 var MIN_TARGET_AGENT_COUNT = 1;
@@ -7428,7 +7728,7 @@ function processAgentAddQueue() {
     return;
   }
   pendingAgentAdds--;
-  runWorkflow({ model: pendingAgentModel, keepTiles: true });
+  runWorkflow({ model: pendingAgentModel, keepTiles: true, skipAuto: skipAutoPhase });
 }
 var healingTile = false;
 function hideBillingBannersNow() {
@@ -7453,7 +7753,7 @@ function startPoolTick() {
     }
     if (workflowProc || healingTile)
       return;
-    if (!autoReconnect || pendingAgentAdds > 0)
+    if (!anyKeepConnected() || pendingAgentAdds > 0)
       return;
     void maintainPool();
   }, POOL_TICK_MS);
@@ -7472,9 +7772,18 @@ function gcDeadAgentDirs() {
     live.add(v.id);
   if (selectedAgentId)
     live.add(selectedAgentId);
+  const cdpViews = tileStateManager.toAgentViews();
+  const cdpIds = cdpEnabled && (lastCdpStatus?.connected ?? false) && cdpViews.length > 0 ? new Set(cdpViews.map((v) => v.id)) : null;
   for (const id of listAgentDirIds()) {
     if (live.has(id))
       continue;
+    if (cdpIds && !cdpIds.has(id) && getAgentStatusFor(id).alive) {
+      tileStateManager.forgetAgent(id);
+      agentStats.delete(id);
+      forgetAgentDir(id);
+      dlog(`reaped ghost agent ${id.slice(0, 8)} (no CDP tile)`);
+      continue;
+    }
     if (getAgentStatusFor(id).alive)
       continue;
     tileStateManager.forgetAgent(id);
@@ -7484,8 +7793,9 @@ function gcDeadAgentDirs() {
   }
 }
 async function maintainPool() {
-  if (!autoReconnect || workflowProc || healingTile || pendingAgentAdds > 0)
+  if (!anyKeepConnected() || workflowProc || healingTile || pendingAgentAdds > 0) {
     return;
+  }
   const now = Date.now();
   const synth = tileStateManager.getAgents().find(
     (a) => a.agentId.startsWith("tile:") && a.tileIndex >= 0 && a.state === "idle" && now - a.firstSeen > 15e3
@@ -7504,49 +7814,21 @@ async function maintainPool() {
     pushAgentList();
     return;
   }
-  const dropped = tileStateManager.getAgentsNeedingHeal(CONFIRM_DROP_MS);
-  if (dropped.length > 0) {
-    const victim = dropped[0];
-    if (victim.connectCount > 0) {
-      dlog(
-        `keep-connected: re-priming dropped agent ${victim.agentId.slice(0, 8)} in place` + (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
-        "warn"
-      );
-      postWorkflow({
-        type: "workflowOutput",
-        stream: "stdout",
-        line: `[jefr] keep-connected: agent ${victim.agentId.slice(0, 8)} dropped` + (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") + " \u2014 re-priming in place"
-      });
-      tileStateManager.markReconnectAttempt(victim.agentId);
-      runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
-      return;
-    }
-    healingTile = true;
-    dlog(`keep-connected: closing idle agent ${victim.agentId.slice(0, 8)} and replacing`, "warn");
-    postWorkflow({
-      type: "workflowOutput",
-      stream: "stdout",
-      line: `[jefr] keep-connected: idle tile ${victim.agentId.slice(0, 8)} \u2014 closing and spawning a replacement`
-    });
-    try {
-      const closed = cdpEnabled ? await getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false) : false;
-      if (closed) {
-        tileStateManager.forgetAgent(victim.agentId);
-        agentStats.delete(victim.agentId);
-        forgetAgentDir(victim.agentId);
-        if (victim.agentId === selectedAgentId)
-          selectAgent(void 0);
-      } else {
-        tileStateManager.markReconnectAttempt(victim.agentId);
-        runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
-        return;
-      }
-    } finally {
-      healingTile = false;
-    }
-    lastAgentListJson = void 0;
-    pushAgentList();
-  }
+  const dropped = tileStateManager.getAgentsNeedingHeal(CONFIRM_DROP_MS).filter((a) => keepConnectedAgents.has(a.agentId));
+  if (dropped.length === 0)
+    return;
+  const victim = dropped[0];
+  dlog(
+    `keep-connected: re-priming kept agent ${victim.agentId.slice(0, 8)} in place` + (victim.queueCount > 0 ? ` (${victim.queueCount} queued)` : ""),
+    "warn"
+  );
+  postWorkflow({
+    type: "workflowOutput",
+    stream: "stdout",
+    line: `[jefr] keep: agent ${victim.agentId.slice(0, 8)} dropped` + (victim.queueCount > 0 ? ` with ${victim.queueCount} queued` : "") + " \u2014 re-priming in place"
+  });
+  tileStateManager.markReconnectAttempt(victim.agentId);
+  runWorkflow({ reconnect: true, agentId: victim.agentId, model: poolModel });
 }
 async function closeDroppedTiles() {
   if (healingTile)
@@ -7558,7 +7840,12 @@ async function closeDroppedTiles() {
   healingTile = true;
   try {
     for (const victim of dropped) {
-      const ok = cdpEnabled ? await getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false) : false;
+      const ok = cdpEnabled ? await (async () => {
+        const fast = await getCdpMonitor().closeAgentTileFast(victim.agentId).catch(() => false);
+        if (fast)
+          return true;
+        return getCdpMonitor().closeAgentTile(victim.agentId).catch(() => false);
+      })() : false;
       if (ok) {
         tileStateManager.forgetAgent(victim.agentId);
         agentStats.delete(victim.agentId);
@@ -7659,23 +7946,27 @@ function runWorkflow(opts) {
     return;
   }
   const args = [script];
+  const model = opts.model && opts.model.trim() || poolModel || WORKFLOW_DEFAULT_MODEL;
   if (opts.reconnect) {
-    args.push("--reconnect");
+    args.push("--reconnect", "--model", model);
     if (typeof opts.tile === "number" && Number.isInteger(opts.tile)) {
       args.push("--tile", String(opts.tile));
     }
     if (opts.agentId && opts.agentId.trim()) {
       args.push("--agent-id", opts.agentId.trim());
     }
-  } else if (opts.autoPrompt && opts.autoPrompt.trim()) {
-    args.push(opts.autoPrompt);
-  }
-  if (!opts.reconnect) {
+  } else {
+    if (opts.autoPrompt && opts.autoPrompt.trim()) {
+      args.push(opts.autoPrompt);
+    }
     if (opts.keepTiles !== false) {
       args.push("--keep-tiles");
     }
+    args.push("--model", model);
+    if (opts.skipAuto) {
+      args.push("--skip-auto");
+    }
   }
-  args.push("--model", opts.model && opts.model.trim() || WORKFLOW_DEFAULT_MODEL);
   if (opts.opusPrompt && opts.opusPrompt.trim()) {
     args.push("--type-text", opts.opusPrompt);
   }
@@ -7699,6 +7990,10 @@ function runWorkflow(opts) {
   });
   let proc;
   try {
+    if (opts.reconnect && opts.agentId?.trim() && cdpEnabled) {
+      void getCdpMonitor().focusAgent(opts.agentId.trim()).catch(() => {
+      });
+    }
     proc = (0, import_child_process.spawn)(py, args, {
       cwd: path3.dirname(script),
       windowsHide: true,
@@ -7788,46 +8083,8 @@ function stopWorkflow() {
   }
 }
 var IDLE_TIMEOUT_MS = 5 * 60 * 1e3;
-var STANDBY_MESSAGE = "Hello. IMPORTANT: STAND BY. Take NO action of any kind right now \u2014 do not run any tools, edit files, or make any changes. Just hold, keep the connection open, and wait for my next instruction.";
 function resetIdleTimer() {
   lastActivityTime = Date.now();
-}
-function startIdleTimer() {
-  if (idleTimer) {
-    clearInterval(idleTimer);
-  }
-  idleTimer = setInterval(() => {
-    if (!isCardValid()) {
-      return;
-    }
-    if (Date.now() - lastActivityTime < IDLE_TIMEOUT_MS) {
-      return;
-    }
-    const targets = tileStateManager.getAgents().filter(
-      (a) => !a.agentId.startsWith("tile:") && a.tileIndex >= 0 && a.connectCount > 0 && // Online + idle = parked in the MCP loop (not generating/planning/working).
-      (a.state === "mcp_connected" || a.state === "waiting") && a.queueCount === 0
-    );
-    if (targets.length === 0) {
-      return;
-    }
-    dlog(
-      `idle ${IDLE_TIMEOUT_MS / 6e4}m: stand-by nudge \u2192 ${targets.length} agent(s): ${targets.map((a) => a.agentId.slice(0, 8)).join(", ")}`
-    );
-    for (const a of targets) {
-      const item = sendTextTo(a.agentId, STANDBY_MESSAGE);
-      mainPanel?.webview.postMessage({
-        type: "historyAppend",
-        agentId: a.agentId,
-        item: {
-          id: item.id,
-          kind: "text",
-          text: STANDBY_MESSAGE,
-          time: new Date(item.timestamp || Date.now()).toLocaleTimeString()
-        }
-      });
-    }
-    resetIdleTimer();
-  }, 6e4);
 }
 function computeDataDir(workspaceFolders) {
   const rootDir = path3.join(os3.homedir(), ".moyu-message");
@@ -7873,7 +8130,32 @@ function activate(context) {
       )
     )
   );
-  poolModel = context.globalState.get(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL) || WORKFLOW_DEFAULT_MODEL;
+  poolModel = normalizePoolModel(
+    context.globalState.get(WORKFLOW_MODEL_KEY, WORKFLOW_DEFAULT_MODEL)
+  );
+  if (poolModel !== context.globalState.get(WORKFLOW_MODEL_KEY)) {
+    void context.globalState.update(WORKFLOW_MODEL_KEY, poolModel);
+  }
+  skipAutoPhase = context.globalState.get(SKIP_AUTO_KEY, false) === true;
+  {
+    const saved = context.globalState.get(KEEP_CONNECTED_KEY);
+    keepConnectedAgents.clear();
+    if (Array.isArray(saved)) {
+      for (const id of saved) {
+        if (typeof id === "string" && id.trim())
+          keepConnectedAgents.add(id.trim());
+      }
+    }
+  }
+  {
+    const saved = context.globalState.get(WORKFLOW_MODELS_KEY);
+    if (Array.isArray(saved) && saved.length > 0) {
+      workflowModels = saved.filter((m) => typeof m === "string" && !!m.trim()).map((m) => m.trim());
+    }
+    if (workflowModels.length === 0) {
+      workflowModels = [...FALLBACK_WORKFLOW_MODELS];
+    }
+  }
   const workspaceFolders = vscode.workspace.workspaceFolders || [];
   currentDataDir = readMcpDataDir(workspaceFolders) ?? computeDataDir(workspaceFolders);
   setDataDir(currentDataDir);
@@ -7941,7 +8223,6 @@ function activate(context) {
   startPolling();
   startRemotePolling();
   startHeartbeat();
-  startIdleTimer();
   autoSetupMcp();
   startCdpMonitoring();
   startPoolTick();
@@ -8065,8 +8346,9 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
       forgetAgentDir(id);
     }
   }
-  if (autoReconnect && !workflowProc) {
-    const target = pickReconnect(dropped, agentStats, now, RECONNECT_DEBOUNCE_MS);
+  if (anyKeepConnected() && !workflowProc) {
+    const keptDropped = dropped.filter((id) => keepConnectedAgents.has(id));
+    const target = pickReconnect(keptDropped, agentStats, now, RECONNECT_DEBOUNCE_MS);
     if (target) {
       const s = agentStats.get(target);
       if (s) {
@@ -8077,7 +8359,7 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
       postWorkflow({
         type: "workflowOutput",
         stream: "stdout",
-        line: `[jefr] auto-reconnect: agent ${target.slice(0, 8)} dropped \u2014 re-priming its tile`
+        line: `[jefr] keep: agent ${target.slice(0, 8)} dropped \u2014 re-priming its tile`
       });
       runWorkflow({ reconnect: true, agentId: target, model: poolModel });
     }
@@ -8085,7 +8367,8 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
   const droppedSet = new Set(dropped);
   const agentsWithDropped = agents.map((a) => ({
     ...a,
-    dropped: !a.connected && droppedSet.has(a.id)
+    dropped: !a.connected && droppedSet.has(a.id),
+    keepConnected: keepConnectedAgents.has(a.id)
   }));
   writeCdpStatusFile(agents);
   resolveSpawnConnectingId(agentsWithDropped);
@@ -8097,9 +8380,9 @@ function pushAgentListFromHeartbeats(cdpFallback = false) {
       connectMs: agentConnectMs.get(a.id)
     })),
     selected: selectedAgentId || null,
-    autoReconnect,
     targetAgentCount,
     workflowModel: poolModel,
+    skipAutoPhase,
     cdpConnected: cdpFallback ? lastCdpStatus?.connected ?? false : false,
     connectingAgentId: workflowProc ? activeWorkflowAgentId ?? null : null,
     connectingSince: workflowProc ? workflowStartedAt : 0
@@ -8366,6 +8649,7 @@ var MessengerViewProvider = class {
           this.pushQueueData();
           lastAgentListJson = void 0;
           pushAgentList();
+          pushWorkflowModels();
           if (cdpEnabled) {
             getCdpMonitor().pollNow().then(() => {
               lastAgentListJson = void 0;
@@ -8400,12 +8684,10 @@ var MessengerViewProvider = class {
         case "selectAgent":
           selectAgent(msg.agentId);
           break;
-        case "setAutoReconnect":
-          autoReconnect = !!msg.enabled;
-          lastAgentListJson = void 0;
-          pushAgentList();
-          if (autoReconnect)
-            void maintainPool();
+        case "setAgentKeepConnected":
+          if (typeof msg.agentId === "string" && msg.agentId.trim()) {
+            setAgentKeepConnected(msg.agentId.trim(), !!msg.enabled);
+          }
           break;
         case "setTargetAgentCount":
           if (typeof msg.count === "number" && Number.isFinite(msg.count)) {
@@ -8416,6 +8698,15 @@ var MessengerViewProvider = class {
           if (typeof msg.model === "string") {
             setPoolModel(msg.model);
           }
+          break;
+        case "setSkipAutoPhase":
+          setSkipAutoPhase(!!msg.enabled);
+          break;
+        case "getWorkflowModels":
+          pushWorkflowModels();
+          break;
+        case "refreshWorkflowModels":
+          refreshWorkflowModelsFromPicker();
           break;
         case "equalizeTiles": {
           if (cdpEnabled) {
@@ -8445,7 +8736,8 @@ var MessengerViewProvider = class {
         case "addAgent": {
           runWorkflow({
             model: typeof msg.model === "string" && msg.model.trim() || poolModel,
-            keepTiles: true
+            keepTiles: true,
+            skipAuto: skipAutoPhase
           });
           break;
         }
@@ -8459,6 +8751,15 @@ var MessengerViewProvider = class {
           const aid = typeof msg.agentId === "string" ? msg.agentId.trim() : "";
           if (!aid)
             break;
+          const notifyDelete = (status, error) => {
+            mainPanel?.webview.postMessage({
+              type: "agentDeleteStatus",
+              agentId: aid,
+              status,
+              ...error ? { error } : {}
+            });
+          };
+          notifyDelete("closing");
           if (isConnectingTarget(aid)) {
             dlog(`delete: ${aid.slice(0, 8)} is the connecting tile \u2014 stopping its workflow first`, "warn");
             postWorkflow({
@@ -8489,6 +8790,7 @@ var MessengerViewProvider = class {
               stream: "stderr",
               line: `[jefr] Failed to close tile for agent ${aid.slice(0, 8)}; keeping it in the roster.`
             });
+            notifyDelete("failed", "Could not close tile \u2014 try again or close it in Cursor");
             lastAgentListJson = void 0;
             pushAgentList();
             break;
@@ -8496,7 +8798,9 @@ var MessengerViewProvider = class {
           dlog(`deleted agent ${aid.slice(0, 8)} (tile closed)`);
           tileStateManager.forgetAgent(aid);
           agentStats.delete(aid);
+          forgetKeepConnected(aid);
           forgetAgentDir(aid);
+          notifyDelete("closed");
           if (aid === selectedAgentId) {
             selectAgent(void 0);
           } else {
@@ -8630,7 +8934,8 @@ var MessengerViewProvider = class {
               model: msg.model,
               // Default to keeping existing tiles so spawns accumulate agents;
               // the UI can pass keepTiles:false to force the clean-collapse spawn.
-              keepTiles: msg.keepTiles !== false
+              keepTiles: msg.keepTiles !== false,
+              skipAuto: typeof msg.skipAuto === "boolean" ? msg.skipAuto : skipAutoPhase
             });
           } catch (e) {
             postWorkflow({
@@ -8647,10 +8952,10 @@ var MessengerViewProvider = class {
             runWorkflow({
               reconnect: true,
               tile: typeof msg.tile === "number" && Number.isInteger(msg.tile) ? msg.tile : void 0,
+              model: poolModel,
               opusPrompt: msg.opusPrompt,
               maxSecs: msg.maxSecs,
-              enterInterval: msg.enterInterval,
-              model: typeof msg.model === "string" && msg.model.trim() || poolModel
+              enterInterval: msg.enterInterval
             });
           } catch (e) {
             postWorkflow({

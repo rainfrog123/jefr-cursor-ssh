@@ -29,15 +29,31 @@
     const shell = document.querySelector(".agent-panel-conversation-shell");
     return shell ? [shell] : [];
   })();
+  const modelOf = (t) => {
+    const eds = [...(t?.querySelectorAll(".tiptap.ProseMirror.ui-prompt-input-editor__input") || [])]
+      .filter((e) => !e.closest(".prompt-edit-input"));
+    const ed = eds[eds.length - 1];
+    const root = ed
+      ? ed.closest(".ui-prompt-input") || ed.closest(".agent-prompt-input-root")
+      : null;
+    const fromComposer = root?.querySelector(".ui-model-picker__trigger-text")?.textContent?.trim();
+    if (fromComposer) return fromComposer;
+    const texts = [...(t?.querySelectorAll(".ui-model-picker__trigger-text") || [])]
+      .filter((el) => !el.closest(".prompt-edit-input"));
+    return texts[texts.length - 1]?.textContent?.trim() || "";
+  };
+
   const rows = tiles.map((t, i) => {
-    const submit = t.querySelector(".ui-prompt-input-submit-button");
+    const submits = [...t.querySelectorAll(".ui-prompt-input-submit-button")]
+      .filter((b) => !b.closest(".prompt-edit-input"));
+    const submit = submits[submits.length - 1];
     const aria = submit?.getAttribute("aria-label") || "";
     const text = (t.innerText || "").replace(/\s+/g, " ").trim();
     return {
       i,
       agentId: agentIdOf(t),
-      model: t.querySelector(".ui-model-picker__trigger-text")?.textContent?.trim() || "",
-      generating: submit?.getAttribute("data-state") === "stop" || /stop generation/i.test(aria),
+      model: modelOf(t),
+      generating: submits.some((b) => b.getAttribute("data-state") === "stop") || /stop generation/i.test(aria),
       runningJefr: /(Ran|Running) Check Messages in jefr/i.test(text),
     };
   });
@@ -45,7 +61,11 @@
   if (TARGET && TARGET !== "__" + "AGENT__") {
     const hit = rows.find((r) => r.agentId === TARGET);
     if (!hit) return { ok: false, error: "agentId not found", target: TARGET, rows };
-    const ed = tiles[hit.i]?.querySelector(".tiptap.ProseMirror.ui-prompt-input-editor__input");
+    const t = tiles[hit.i];
+    // Last composer on the tile (same rule as modelOf / editorIn).
+    const eds = [...(t?.querySelectorAll(".tiptap.ProseMirror.ui-prompt-input-editor__input") || [])]
+      .filter((e) => !e.closest(".prompt-edit-input"));
+    const ed = eds[eds.length - 1];
     if (ed) {
       ed.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       ed.focus();

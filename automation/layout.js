@@ -9,18 +9,18 @@ function detectLayout() {
 function snapshot() {
   const layout = detectLayout();
   const out = { layout, tiles: [] };
-  // model of the ACTIVE composer (follow-up if present), not the first picker found
+  // Model of the LAST composer on the tile (not the first picker found).
   const activeModel = (i) => modelTriggerIn(i)?.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim();
   if (layout.mode === 'tiled') {
     out.tiles = tiles().map((t, i) => ({
       i, title: t.querySelector('.chat-title-tab-title')?.textContent?.trim(),
-      model: activeModel(i) || t.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim(),
+      model: activeModel(i),
       generating: !!stopIn(t), planning: /planning/i.test(t.querySelector('.ui-collapsible-shimmer')?.textContent || ''),
     }));
   } else {
     out.tiles = [{
       i: 0, title: document.querySelector('.chat-title-tab-title')?.textContent?.trim(),
-      model: activeModel(0) || document.querySelector('.ui-model-picker__trigger-text')?.textContent?.trim(),
+      model: activeModel(0),
       generating: !!document.querySelector('.ui-prompt-input-submit-button[data-state="stop"]'),
       planning: /planning/i.test(document.querySelector('.ui-collapsible-shimmer')?.textContent || ''),
     }];
@@ -103,12 +103,13 @@ function isFollowupEditor(ed) {
   return /send follow-?up/i.test(ph);
 }
 
-// The composer we should drive: prefer the live "Send follow-up" input of an
-// active conversation; otherwise the main composer (last non-edit editor).
+// The composer we should drive: the LAST non-edit editor on the tile.
+// A tile can host multiple composers/pickers (e.g. an older prompt + the live
+// follow-up); the first match is often stale (still "Auto"), so always take last.
 function editorIn(idx) {
   const eds = editorsIn(idx);
   if (eds.length === 0) return null;
-  return eds.find(isFollowupEditor) || eds[eds.length - 1];
+  return eds[eds.length - 1];
 }
 
 // The .ui-prompt-input container wrapping the active composer (for sibling lookups).
@@ -125,18 +126,30 @@ function focusEditorIn(idx) {
   return ed;
 }
 
+/** Last model-picker trigger in a root (excludes inline prompt-edit boxes). */
+function lastModelTrigger(root) {
+  if (!root) return null;
+  const all = [...root.querySelectorAll('.ui-model-picker__trigger')]
+    .filter((tr) => !tr.closest('.prompt-edit-input'));
+  return all[all.length - 1] || null;
+}
+
 function modelTriggerIn(idx) {
-  const trig = composerRootIn(idx)?.querySelector('.ui-model-picker__trigger');
+  const trig = lastModelTrigger(composerRootIn(idx));
   if (trig) return trig;
-  if (tiles().length > 0) return tileAt(idx)?.querySelector('.ui-model-picker__trigger');
-  if (idx === 0) return document.querySelector('.ui-model-picker__trigger');
+  if (tiles().length > 0) return lastModelTrigger(tileAt(idx));
+  if (idx === 0) return lastModelTrigger(document);
   return null;
 }
 
 function submitIn(idx) {
   const btn = composerRootIn(idx)?.querySelector('.ui-prompt-input-submit-button');
   if (btn) return btn;
-  if (tiles().length > 0) return tileAt(idx)?.querySelector('.ui-prompt-input-submit-button');
+  if (tiles().length > 0) {
+    const btns = [...(tileAt(idx)?.querySelectorAll('.ui-prompt-input-submit-button') || [])]
+      .filter((b) => !b.closest('.prompt-edit-input'));
+    return btns[btns.length - 1] || null;
+  }
   return document.querySelector('.ui-prompt-input-submit-button');
 }
 

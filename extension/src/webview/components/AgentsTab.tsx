@@ -1,8 +1,8 @@
 /**
  * Agents tab — the hub of the panel. Shows a "General · shared" card plus one
  * card per agent tile. Clicking a card makes it the ACTIVE agent: the one the
- * Obsidian plugin (and the webview) routes to. Stats live on each card; the
- * Add / fill-pool / auto-reconnect controls sit at the top.
+ * Obsidian plugin (and the webview) routes to. Dropped tiles show Keep +
+ * Reconnect on the card itself.
  */
 import React, { useEffect, useState } from "react";
 import { post } from "../vscode";
@@ -14,7 +14,6 @@ import { fmtConnect, fmtDuration } from "../format";
 export function AgentsTab(props: {
   agents: LiveAgentInfo[];
   selectedAgentId: string | null;
-  autoReconnect: boolean;
   targetAgentCount: number;
   /** Shared pool spawn model (chosen in the workflow dropdown). */
   workflowModel: string;
@@ -24,6 +23,10 @@ export function AgentsTab(props: {
   connectingSince?: number;
   sharedQueueCount?: number;
   refreshing?: boolean;
+  /** Agent ids currently mid-delete (CDP close in flight). */
+  closingAgentIds?: Set<string>;
+  /** Per-agent close failure message. */
+  deleteErrors?: Record<string, string>;
   onRefresh?: () => void;
   onSelectAgent: (id: string | null) => void;
   onOpenDetail: (id: string | null) => void;
@@ -31,7 +34,6 @@ export function AgentsTab(props: {
   const {
     agents,
     selectedAgentId,
-    autoReconnect,
     targetAgentCount,
     workflowModel,
     cdpConnected,
@@ -40,6 +42,8 @@ export function AgentsTab(props: {
     connectingSince,
     sharedQueueCount,
     refreshing,
+    closingAgentIds,
+    deleteErrors,
     onRefresh,
     onSelectAgent,
     onOpenDetail,
@@ -70,8 +74,7 @@ export function AgentsTab(props: {
       (a.connectCount > 0 && (a.dropped || a.serverDropped))
     );
   }).length;
-  const keepCount = agents.length;
-  const slotsLeft = Math.max(0, targetAgentCount - keepCount);
+  const slotsLeft = Math.max(0, targetAgentCount - agents.length);
   // Manual "Add agent" is uncapped — you can grow the pool to as many agents as
   // you like. "Fill" only tops up to the auto-baseline (targetAgentCount).
   const canAddOne = !workflowRunning;
@@ -111,29 +114,25 @@ export function AgentsTab(props: {
   return (
     <div className="agents-tab">
       <div className="agents-hero">
-        <div className="agents-hero-text">
-          <h2 className="agents-hero-title">Agent pool</h2>
-        </div>
-        <div className="agents-hero-stats">
-          <div className="agents-stat">
-            <span className="agents-stat-num">{connectedCount}</span>
-            <span className="agents-stat-label">connected</span>
-          </div>
-          <div className="agents-stat">
-            <span className="agents-stat-num">{agents.length}</span>
-            <span className="agents-stat-label">online</span>
-          </div>
-          <div
-            className={`agents-stat cdp ${cdpConnected ? "on" : "off"}`}
+        <h2 className="agents-hero-title">Agent pool</h2>
+        <div className="agents-pills" aria-label="Pool status">
+          <span className="agents-pill" title="MCP-connected agents (excl. still connecting)">
+            <strong>{connectedCount}</strong> connected
+          </span>
+          <span className="agents-pill" title="Agents currently in the roster">
+            <strong>{agents.length}</strong> online
+          </span>
+          <span
+            className={"agents-pill cdp " + (cdpConnected ? "on" : "off")}
             title={
               cdpConnected
                 ? "CDP monitoring active (port 9222)"
                 : "CDP offline — using file heartbeats"
             }
           >
-            <span className="agents-stat-num">{cdpConnected ? "CDP" : "—"}</span>
-            <span className="agents-stat-label">monitor</span>
-          </div>
+            <span className="agents-pill-dot" />
+            CDP
+          </span>
         </div>
       </div>
 
@@ -144,7 +143,7 @@ export function AgentsTab(props: {
           onClick={addAgent}
           title={`Spawn a new agent tile (${spawnModel}). No cap — add as many as you want.`}
         >
-          + Add agent
+          + Add
         </button>
         <button
           className="btn btn-primary btn-small"
@@ -152,26 +151,27 @@ export function AgentsTab(props: {
           onClick={fillPool}
           title={`Fill the pool to ${targetAgentCount} agents in one click (${spawnModel}). Spawns are queued and run one at a time.`}
         >
-          {slotsLeft > 0 ? `+ Add ${slotsLeft}` : `Fill ${targetAgentCount}`}
+          {slotsLeft > 0 ? `+${slotsLeft}` : `Fill ${targetAgentCount}`}
         </button>
         <button
           className={"btn btn-secondary btn-small" + (refreshing ? " is-refreshing" : "")}
           onClick={refresh}
           disabled={refreshing}
-          title="Re-scan Cursor (force-reconnect CDP) and refresh the roster — pulls in every open tile, including dropped ones"
+          title="Re-scan Cursor (force-reconnect CDP) and refresh the roster"
         >
-          {refreshing ? "⟳ Refreshing…" : "↻ Refresh"}
+          {refreshing ? "…" : "↻"}
         </button>
         <button
           className="btn btn-secondary btn-small"
           onClick={equalizeTiles}
-          title="Make every agent tile the same width (repeated splits leave them lopsided)."
+          title="Make every agent tile the same width"
         >
-          ⊟ Equalize
+          ⊟
         </button>
+
         <div
           className="agents-target"
-          title="Pool size: how many agent slots to show and keep connected (1–12). One knob drives both."
+          title="Pool size: how many agent slots to show and keep connected (1–12)."
         >
           <span className="agents-target-label">Target</span>
           <button
@@ -192,37 +192,11 @@ export function AgentsTab(props: {
             +
           </button>
         </div>
-      </div>
 
-      {/* Pool self-heal + free-slot hint on one row so the hint doesn't float
-          above this control when the toolbar wraps. */}
-      <div className="agents-pool-controls">
-        {keepCount > 0 ? (
-          <label
-            className="agents-auto"
-            title={`Keep these ${keepCount} pool agent${keepCount !== 1 ? "s" : ""} MCP-connected: dropped tiles are re-primed in place (same agentId). Does not auto-spawn to the Target — use + Add / Fill for that.`}
-          >
-            <input
-              type="checkbox"
-              checked={autoReconnect}
-              onChange={(e) =>
-                post({ type: "setAutoReconnect", enabled: e.target.checked })
-              }
-            />
-            Keep {keepCount} connected
-          </label>
-        ) : (
-          <span
-            className="agents-auto agents-auto-muted"
-            title="Add an agent to the pool first — keep-connected maintains agents already here, not the Target count."
-          >
-            Keep pool connected
-          </span>
-        )}
-        {slotsLeft > 0 && keepCount > 0 && (
-          <span className="agents-slots-hint">
-            {slotsLeft} slot{slotsLeft !== 1 ? "s" : ""} free to target
-          </span>
+        <div className="agents-toolbar-spacer" />
+
+        {slotsLeft > 0 && agents.length > 0 && (
+          <span className="agents-slots-hint">{slotsLeft} free</span>
         )}
       </div>
 
@@ -315,11 +289,17 @@ export function AgentsTab(props: {
           const isDropped = status === "cutoff" || status === "server_dropped";
           const showHeld =
             isDropped && a.lastConnectedMs != null && a.lastConnectedMs > 0;
+          const isClosing = !!closingAgentIds?.has(a.id);
+          const deleteError = deleteErrors?.[a.id];
 
           return (
             <div
               key={a.id}
-              className={"agent-slot filled" + (isMain ? " main" : "")}
+              className={
+                "agent-slot filled" +
+                (isMain ? " main" : "") +
+                (isClosing ? " is-closing" : "")
+              }
               role="button"
               aria-pressed={isMain}
               title={
@@ -358,9 +338,20 @@ export function AgentsTab(props: {
                     connected for {fmtDuration(a.lastConnectedMs!)}
                   </span>
                 )}
+                {isClosing && (
+                  <span className="agent-timing agent-closing">closing…</span>
+                )}
+                {deleteError && !isClosing && (
+                  <span className="agent-timing agent-close-error" title={deleteError}>
+                    {deleteError}
+                  </span>
+                )}
                 {a.model && (
-                  <span className="agent-model" title={a.model}>
-                    {a.model}
+                  <span
+                    className="agent-model"
+                    title={a.model.replace(/[\u200b\u200c\u200d\ufeff]/g, "")}
+                  >
+                    {a.model.replace(/[\u200b\u200c\u200d\ufeff]/g, "").trim()}
                   </span>
                 )}
               </div>
@@ -377,25 +368,83 @@ export function AgentsTab(props: {
                   ⤢
                 </button>
                 <button
-                  className="btn btn-secondary btn-small"
+                  type="button"
+                  className={
+                    "btn btn-secondary btn-small agent-keep-btn" +
+                    (a.keepConnected ? " on" : "")
+                  }
+                  aria-pressed={!!a.keepConnected}
+                  aria-label={
+                    a.keepConnected ? "Keep connected on" : "Keep connected off"
+                  }
+                  title={
+                    a.keepConnected
+                      ? "Keep on — auto-reconnect when this tile drops"
+                      : "Keep off — click to auto-reconnect when this tile drops"
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
-                    post({ type: "reconnectAgent", agentId: a.id });
+                    post({
+                      type: "setAgentKeepConnected",
+                      agentId: a.id,
+                      enabled: !a.keepConnected,
+                    });
                   }}
-                  disabled={workflowRunning}
-                  title="Re-prime this tile's MCP loop"
                 >
-                  ↻
+                  <svg
+                    className="agent-keep-icon"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    {a.keepConnected ? (
+                      <path
+                        fill="currentColor"
+                        d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+                      />
+                    ) : (
+                      <path
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinejoin="round"
+                        d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+                      />
+                    )}
+                  </svg>
                 </button>
+                {isDropped && (
+                  <button
+                    className="btn btn-secondary btn-small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      post({ type: "reconnectAgent", agentId: a.id });
+                    }}
+                    disabled={workflowRunning}
+                    title="Re-prime this tile's MCP loop now"
+                  >
+                    ↻
+                  </button>
+                )}
                 <button
-                  className="btn btn-danger btn-small"
+                  className={
+                    "btn btn-danger btn-small" + (isClosing ? " is-closing" : "")
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (isClosing) return;
                     post({ type: "deleteAgent", agentId: a.id });
                   }}
-                  title="Remove from roster and close tile"
+                  disabled={isClosing}
+                  title={
+                    isClosing
+                      ? "Closing tile…"
+                      : "Remove from roster and close tile"
+                  }
+                  aria-busy={isClosing}
                 >
-                  ×
+                  {isClosing ? "…" : "×"}
                 </button>
               </div>
             </div>

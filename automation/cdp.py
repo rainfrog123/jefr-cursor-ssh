@@ -347,9 +347,17 @@ def print_result(res, console):
     r = res.get("result", {})
     exc = res.get("exceptionDetails")
     if exc:
-        print("EXCEPTION", json.dumps(exc.get("exception", exc), indent=2)[:2000])
+        msg = json.dumps(exc.get("exception", exc), indent=2)[:2000]
+        print("EXCEPTION", msg.encode("utf-8", "replace").decode("utf-8"))
     else:
-        print("RESULT", _render(r))
+        # Windows consoles (cp1252) choke on ZWSP in Cursor model labels.
+        out = _render(r)
+        try:
+            print("RESULT", out)
+        except UnicodeEncodeError:
+            print("RESULT", out.encode(sys.stdout.encoding or "utf-8", "replace").decode(
+                sys.stdout.encoding or "utf-8", "replace"
+            ))
 
 
 def main():

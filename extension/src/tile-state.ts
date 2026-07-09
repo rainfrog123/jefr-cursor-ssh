@@ -299,9 +299,9 @@ export class TileStateManager {
         };
         if (isUnhealthy(newState)) {
           // A pre-existing ENDED loop (worked stamp / server drop) is a confirmed
-          // drop — backdate so the self-heal acts immediately, not 30s from
+          // drop — backdate so the self-heal acts immediately, not 10s from
           // discovery. A plain idle/empty tile (incl. a brand-new one, or one
-          // mid-spawn) gets the normal 30s confirm so it isn't recycled instantly.
+          // mid-spawn) gets the normal 10s confirm so it isn't recycled instantly.
           newState.droppedSince =
             newState.worked || isServerDropped(newState) ? 1 : now;
         }

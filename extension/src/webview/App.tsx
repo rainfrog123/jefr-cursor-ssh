@@ -24,7 +24,10 @@ import { QueueTab } from "./components/QueueTab";
 import { GeneralTab, type WorkflowLine } from "./components/GeneralTab";
 import { AgentsTab } from "./components/AgentsTab";
 import { AgentDetail } from "./components/AgentDetail";
-import { DEFAULT_WORKFLOW_MODEL } from "./workflowModels";
+import {
+  DEFAULT_WORKFLOW_MODEL,
+  FALLBACK_WORKFLOW_MODELS,
+} from "./workflowModels";
 import { applyScale, loadScale } from "./fontScale";
 
 type TabId = "agents" | "queue" | "general";
@@ -106,14 +109,23 @@ export function App(): JSX.Element {
 
   const [agents, setAgents] = useState<LiveAgentInfo[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [autoReconnect, setAutoReconnect] = useState(false);
   const [targetAgentCount, setTargetAgentCount] = useState(5);
   const [workflowModel, setWorkflowModel] = useState<string>(DEFAULT_WORKFLOW_MODEL);
+  const [skipAutoPhase, setSkipAutoPhase] = useState(false);
+  const [workflowModels, setWorkflowModels] = useState<string[]>([
+    ...FALLBACK_WORKFLOW_MODELS,
+  ]);
+  const [workflowModelsRefreshing, setWorkflowModelsRefreshing] = useState(false);
+  const [workflowModelsError, setWorkflowModelsError] = useState<string | null>(null);
   const [cdpConnected, setCdpConnected] = useState<boolean | undefined>(undefined);
   const [connectingAgentId, setConnectingAgentId] = useState<string | null>(null);
   const [connectingSince, setConnectingSince] = useState<number>(0);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Agent ids currently mid-delete (CDP close in flight). */
+  const [closingAgentIds, setClosingAgentIds] = useState<Set<string>>(() => new Set());
+  /** Per-agent close failure message (cleared on retry / success). */
+  const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
 
   /* Apply the saved font scale on first load. The FontScale control now lives on
      the General tab / chat toolbar, so without this top-level apply the saved zoom
@@ -202,9 +214,11 @@ export function App(): JSX.Element {
         case "agentList":
           setAgents(msg.agents);
           setSelectedAgentId(msg.selected);
-          setAutoReconnect(msg.autoReconnect);
           if (msg.targetAgentCount != null) setTargetAgentCount(msg.targetAgentCount);
           if (msg.workflowModel) setWorkflowModel(msg.workflowModel);
+          if (typeof msg.skipAutoPhase === "boolean") {
+            setSkipAutoPhase(msg.skipAutoPhase);
+          }
           if (msg.cdpConnected !== undefined) setCdpConnected(msg.cdpConnected);
           setConnectingAgentId(msg.connectingAgentId ?? null);
           setConnectingSince(msg.connectingSince ?? 0);
@@ -218,6 +232,57 @@ export function App(): JSX.Element {
             refreshTimer.current = null;
           }
           setRefreshing(false);
+          break;
+        case "agentDeleteStatus": {
+          const { agentId, status, error } = msg;
+          if (status === "closing") {
+            setClosingAgentIds((prev) => {
+              const next = new Set(prev);
+              next.add(agentId);
+              return next;
+            });
+            setDeleteErrors((prev) => {
+              if (!prev[agentId]) return prev;
+              const next = { ...prev };
+              delete next[agentId];
+              return next;
+            });
+          } else if (status === "closed") {
+            setClosingAgentIds((prev) => {
+              if (!prev.has(agentId)) return prev;
+              const next = new Set(prev);
+              next.delete(agentId);
+              return next;
+            });
+            setDeleteErrors((prev) => {
+              if (!prev[agentId]) return prev;
+              const next = { ...prev };
+              delete next[agentId];
+              return next;
+            });
+          } else if (status === "failed") {
+            setClosingAgentIds((prev) => {
+              if (!prev.has(agentId)) return prev;
+              const next = new Set(prev);
+              next.delete(agentId);
+              return next;
+            });
+            setDeleteErrors((prev) => ({
+              ...prev,
+              [agentId]: error || "Could not close tile",
+            }));
+          }
+          break;
+        }
+        case "workflowModels":
+          if (Array.isArray(msg.models) && msg.models.length > 0) {
+            setWorkflowModels(msg.models);
+          }
+          if (typeof msg.selected === "string" && msg.selected.trim()) {
+            setWorkflowModel(msg.selected);
+          }
+          setWorkflowModelsRefreshing(!!msg.refreshing);
+          setWorkflowModelsError(msg.error || null);
           break;
         // cardState / cardActivated / cardError / serverInfo are accepted but
         // the local build keeps licensing disabled (checkCard() === true).
@@ -278,6 +343,7 @@ export function App(): JSX.Element {
       post({ type: "fetchUsage" });
       post({ type: "getWorkflowState" });
       post({ type: "getDebugLog" });
+      post({ type: "getWorkflowModels" });
     }
   }, []);
 
@@ -314,6 +380,17 @@ export function App(): JSX.Element {
   const onSetWorkflowModel = useCallback((m: string) => {
     setWorkflowModel(m);
     post({ type: "setWorkflowModel", model: m });
+  }, []);
+
+  const onSetSkipAutoPhase = useCallback((enabled: boolean) => {
+    setSkipAutoPhase(enabled);
+    post({ type: "setSkipAutoPhase", enabled });
+  }, []);
+
+  const onRefreshModels = useCallback(() => {
+    setWorkflowModelsRefreshing(true);
+    setWorkflowModelsError(null);
+    post({ type: "refreshWorkflowModels" });
   }, []);
 
   const onRefresh = useCallback(() => {
@@ -391,7 +468,6 @@ export function App(): JSX.Element {
         <AgentsTab
           agents={agents}
           selectedAgentId={selectedAgentId}
-          autoReconnect={autoReconnect}
           targetAgentCount={targetAgentCount}
           workflowModel={workflowModel}
           cdpConnected={cdpConnected}
@@ -400,6 +476,8 @@ export function App(): JSX.Element {
           connectingSince={connectingSince}
           sharedQueueCount={sharedRootCount}
           refreshing={refreshing}
+          closingAgentIds={closingAgentIds}
+          deleteErrors={deleteErrors}
           onRefresh={onRefresh}
           onSelectAgent={onSelectAgent}
           onOpenDetail={openDetail}
@@ -411,6 +489,8 @@ export function App(): JSX.Element {
           connectingAgentId={connectingAgentId}
           workflowRunning={workflowRunning}
           sharedQueueCount={sharedRootCount}
+          closing={!!(detailAgent && closingAgentIds.has(detailAgent.id))}
+          deleteError={detailAgent ? deleteErrors[detailAgent.id] : undefined}
           history={history}
           attachments={attachments}
           setAttachments={setAttachments}
@@ -436,6 +516,12 @@ export function App(): JSX.Element {
           tokenInjected={tokenInjected}
           workflowModel={workflowModel}
           onModelChange={onSetWorkflowModel}
+          skipAutoPhase={skipAutoPhase}
+          onSkipAutoChange={onSetSkipAutoPhase}
+          workflowModels={workflowModels}
+          workflowModelsRefreshing={workflowModelsRefreshing}
+          workflowModelsError={workflowModelsError}
+          onRefreshModels={onRefreshModels}
           workflowRunning={workflowRunning}
           workflowOutput={workflowOutput}
           onClearWorkflowOutput={() => setWorkflowOutput([])}

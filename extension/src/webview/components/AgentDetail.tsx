@@ -25,6 +25,8 @@ export function AgentDetail(props: {
   connectingAgentId: string | null;
   workflowRunning?: boolean;
   sharedQueueCount?: number;
+  closing?: boolean;
+  deleteError?: string;
   history: HistoryItem[];
   attachments: Attachment[];
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
@@ -34,7 +36,7 @@ export function AgentDetail(props: {
   version?: string;
   onOpenConsole?: () => void;
 }): JSX.Element {
-  const { agent, connectingAgentId, workflowRunning } = props;
+  const { agent, connectingAgentId, workflowRunning, closing, deleteError } = props;
   const isGeneral = agent === null;
 
   // Tick so the uptime stat counts live.
@@ -125,28 +127,95 @@ export function AgentDetail(props: {
         {!isGeneral && (
           <div className="agent-detail-actions">
             <button
-              className="btn btn-secondary btn-small"
-              onClick={() =>
-                post({ type: "reconnectAgent", agentId: agent!.id })
+              type="button"
+              className={
+                "btn btn-secondary btn-small agent-keep-btn" +
+                (agent!.keepConnected ? " on" : "")
               }
-              disabled={workflowRunning}
-              title="Re-prime this tile's MCP loop"
+              aria-pressed={!!agent!.keepConnected}
+              aria-label={
+                agent!.keepConnected
+                  ? "Keep connected on"
+                  : "Keep connected off"
+              }
+              title={
+                agent!.keepConnected
+                  ? "Keep on — auto-reconnect when this tile drops"
+                  : "Keep off — click to auto-reconnect when this tile drops"
+              }
+              onClick={() =>
+                post({
+                  type: "setAgentKeepConnected",
+                  agentId: agent!.id,
+                  enabled: !agent!.keepConnected,
+                })
+              }
             >
-              ↻
+              <svg
+                className="agent-keep-icon"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                {agent!.keepConnected ? (
+                  <path
+                    fill="currentColor"
+                    d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+                  />
+                ) : (
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinejoin="round"
+                    d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+                  />
+                )}
+              </svg>
             </button>
+            {isDropped && (
+              <button
+                className="btn btn-secondary btn-small"
+                onClick={() =>
+                  post({ type: "reconnectAgent", agentId: agent!.id })
+                }
+                disabled={workflowRunning}
+                title="Re-prime this tile's MCP loop now"
+              >
+                ↻ Reconnect
+              </button>
+            )}
             <button
-              className="btn btn-danger btn-small"
+              className={
+                "btn btn-danger btn-small" + (closing ? " is-closing" : "")
+              }
               onClick={() => {
+                if (closing) return;
                 post({ type: "deleteAgent", agentId: agent!.id });
-                props.onBack();
+                // Stay on detail until close succeeds — host will drop the agent
+                // from the list; only navigate back immediately on success path
+                // via list refresh. Keep the user here if close fails.
               }}
-              title="Remove from roster and close tile"
+              disabled={closing}
+              title={
+                closing
+                  ? "Closing tile…"
+                  : "Remove from roster and close tile"
+              }
+              aria-busy={!!closing}
             >
-              ×
+              {closing ? "…" : "×"}
             </button>
           </div>
         )}
       </div>
+
+      {deleteError && !closing && (
+        <p className="agent-close-error-banner" role="alert">
+          {deleteError}
+        </p>
+      )}
 
       <ChatTab
         history={props.history}

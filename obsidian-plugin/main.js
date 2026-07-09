@@ -296,6 +296,7 @@ class JefrView extends ItemView {
     });
     this.routeLabel.setAttr("title", "Choose which agent this message routes to");
     this.routeNameEl = this.routeLabel.createSpan({ cls: "jefr-route-name", text: "" });
+    this.routeModelEl = this.routeLabel.createSpan({ cls: "jefr-route-model", text: "" });
     this.routeLabel.createSpan({ cls: "jefr-route-caret", text: "▾" });
     this.routeLabel.onclick = (e) => {
       e.stopPropagation();
@@ -495,11 +496,22 @@ class JefrView extends ItemView {
     const sid = this.selectedAgentId ? String(this.selectedAgentId) : "";
     const shortId = sid ? sid.slice(0, 8) : "";
     this.routeNameEl.setText(shortId || "All agents");
+    const agent = sid
+      ? (Array.isArray(this.liveAgents) ? this.liveAgents : []).find(
+          (a) => a && String(a.id) === sid,
+        )
+      : null;
+    if (this.routeModelEl) {
+      const model = agent && agent.model ? String(agent.model) : "";
+      this.routeModelEl.setText(model);
+      this.routeModelEl.style.display = model ? "" : "none";
+    }
     if (this.routeLabel) {
+      const modelHint = agent && agent.model ? ` · ${agent.model}` : "";
       this.routeLabel.setAttr(
         "title",
         sid
-          ? `Routes to agent ${sid} — click to change`
+          ? `Routes to agent ${sid}${modelHint} — click to change`
           : "Routes to all agents (shared queue) — click to change",
       );
     }
@@ -515,7 +527,7 @@ class JefrView extends ItemView {
    *  can skip rebuilding it when nothing meaningful changed. Order-independent. */
   agentMenuSignature() {
     const parts = (Array.isArray(this.liveAgents) ? this.liveAgents : [])
-      .map((a) => `${a.id}:${a.state}`)
+      .map((a) => `${a.id}:${a.state}:${a.model || ""}`)
       .sort();
     return `${this.selectedAgentId || ""}|${parts.join(",")}`;
   }
@@ -581,11 +593,12 @@ class JefrView extends ItemView {
       row.createSpan({ cls: "jefr-agent-opt-dot " + (busy ? "is-busy" : "is-listening") });
       row.createSpan({ cls: "jefr-agent-opt-name jefr-agent-opt-id", text: id.slice(0, 8) });
       const meta = [busy ? "busy" : "listening"];
+      if (a.model) meta.push(a.model);
       if (typeof a.queueCount === "number" && a.queueCount > 0) {
         meta.push(`${a.queueCount} queued`);
       }
       row.createSpan({ cls: "jefr-agent-opt-meta", text: meta.join(" · ") });
-      row.setAttr("title", id);
+      row.setAttr("title", a.model ? `${id} · ${a.model}` : id);
       row.onclick = () => this.selectAgentRemote(id);
     }
   }

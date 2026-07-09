@@ -150,6 +150,8 @@ export interface LiveAgentInfo {
   model?: string;
   /** Tile index from CDP (if available). */
   tileIndex?: number;
+  /** When true, auto-reprime this tile if it drops (per-agent Keep). */
+  keepConnected?: boolean;
 }
 
 /** Cursor usage info returned by `fetchUsage`. */
@@ -186,6 +188,12 @@ export type InboundMessage =
   | { type: "clearQuestion" }
   | { type: "showReply"; data: ReplyData }
   | { type: "agentsRefreshed" }
+  | {
+      type: "agentDeleteStatus";
+      agentId: string;
+      status: "closing" | "closed" | "failed";
+      error?: string;
+    }
   | { type: "historyAppend"; item: HistoryItem; agentId?: string }
   | { type: "attachmentAdded"; item: Attachment }
   | { type: "cardState"; data: { active: boolean } }
@@ -201,12 +209,13 @@ export type InboundMessage =
       type: "agentList";
       agents: LiveAgentInfo[];
       selected: string | null;
-      autoReconnect: boolean;
       /** Max agents the UI manages (slot count). */
       targetAgentCount?: number;
       /** The model the pool spawns with — used by Add agent / Fill / keep-N and
        *  reflected in the workflow dropdown. Persisted host-side. */
       workflowModel?: string;
+      /** Skip Auto stand-by phase on spawn. Persisted host-side. */
+      skipAutoPhase?: boolean;
       /** True when CDP real-time monitoring is active. */
       cdpConnected?: boolean;
       /** The single agent a running workflow is currently spawning / re-priming.
@@ -218,7 +227,16 @@ export type InboundMessage =
     }
   | { type: "agentSelected"; agentId: string | null }
   | { type: "debugLog"; entry: DebugEntry }
-  | { type: "debugLogSnapshot"; entries: DebugEntry[] };
+  | { type: "debugLogSnapshot"; entries: DebugEntry[] }
+  | {
+      type: "workflowModels";
+      models: string[];
+      /** Currently selected pool spawn model (may be outside `models`). */
+      selected?: string;
+      /** True while CDP is reading the live picker. */
+      refreshing?: boolean;
+      error?: string;
+    };
 
 /* ------------------------------------------------------------------ */
 /* Messages: webview -> extension host                                 */
@@ -261,6 +279,8 @@ export type OutboundMessage =
       model?: string;
       /** Keep already-open tiles so spawns accumulate agents (default true). */
       keepTiles?: boolean;
+      /** Skip Auto stand-by phase and select the target model immediately. */
+      skipAuto?: boolean;
     }
   | {
       type: "reconnectWorkflow";
@@ -275,9 +295,13 @@ export type OutboundMessage =
   | { type: "getDebugLog" }
   | { type: "clearDebugLog" }
   | { type: "selectAgent"; agentId?: string }
-  | { type: "setAutoReconnect"; enabled: boolean }
+  | { type: "setAgentKeepConnected"; agentId: string; enabled: boolean }
   | { type: "setTargetAgentCount"; count: number }
   | { type: "setWorkflowModel"; model: string }
+  | { type: "setSkipAutoPhase"; enabled: boolean }
+  /** Re-read Cursor's live model picker via CDP (`cdp.py --models`). */
+  | { type: "refreshWorkflowModels" }
+  | { type: "getWorkflowModels" }
   | { type: "equalizeTiles" }
   | { type: "reconnectAgent"; agentId: string }
   | { type: "addAgent"; model?: string }
