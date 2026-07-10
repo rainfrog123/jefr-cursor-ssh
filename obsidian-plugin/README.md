@@ -29,6 +29,8 @@ No file paths or workspace hashing to configure — the extension already points
 - **Port** — default `39517` (the jefr server's preferred port).
 - **Auto-reconnect** — reconnect automatically when Cursor restarts.
 - **Max messages kept** — how many bubbles to keep before trimming the oldest.
+- **Notify on MCP log rewrite** — Windows toast when the Response Log note changes.
+- **Remote SSH response-log bridge** — localhost HTTP server (default `127.0.0.1:39527`) so a Remote-SSH agent can `POST /response-log` and overwrite `Tech/Meta/MCP Response Log.md`. See [../docs/remote-ssh-response-log.md](../docs/remote-ssh-response-log.md).
 
 ## Notes
 

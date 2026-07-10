@@ -30,6 +30,8 @@ The plugin installs `.cursor/rules/mcp-messenger.mdc` into workspaces. The Engli
 - Use `ask_question` when user input is required
 - Use `send_progress` during multi-step tasks
 
+Branch **`multi-agent-ssh`** adds a Remote-SSH path for the Obsidian Response Log via an HTTP bridge — see [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md). Local-only use stays on **`multi-agent`**.
+
 ## License
 
 See extension `package.json` (MIT).

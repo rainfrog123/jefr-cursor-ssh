@@ -36,7 +36,15 @@ const DEFAULT_SETTINGS = {
   // rewritten by the agent. Path is vault-relative (forward slashes).
   notifyOnLogRewrite: true,
   logNotifyPath: "Tech/Meta/MCP Response Log.md",
+  // HTTP bridge so a Remote-SSH agent can POST markdown and have THIS Windows
+  // Obsidian process overwrite the Response Log (via SSH RemoteForward).
+  logBridgeEnabled: true,
+  logBridgePort: 39527,
+  // Optional shared secret. Empty = no auth (ok for 127.0.0.1 + tunnel only).
+  logBridgeToken: "",
 };
+
+const LOG_BRIDGE_MAX_BYTES = 2 * 1024 * 1024;
 
 /* ------------------------------------------------------------------ */
 /* Plugin entry                                                        */
@@ -106,10 +114,140 @@ class JefrPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("modify", (file) => this.onVaultModify(file)),
     );
+
+    this._logBridgeServer = null;
+    this.startLogBridge();
   }
 
   onunload() {
+    this.stopLogBridge();
     // Views detach themselves and close their sockets via onClose().
+  }
+
+  /** Start (or restart) the localhost Response Log HTTP bridge. */
+  startLogBridge() {
+    this.stopLogBridge();
+    if (!this.settings.logBridgeEnabled) return;
+
+    let http;
+    try {
+      http = require("http");
+    } catch (e) {
+      console.error("[jefr] log bridge: http module unavailable", e);
+      return;
+    }
+
+    const port = Number(this.settings.logBridgePort) || 39527;
+    const server = http.createServer((req, res) => {
+      void this.handleLogBridgeRequest(req, res);
+    });
+    server.on("error", (err) => {
+      console.error("[jefr] log bridge listen error:", err && err.message);
+      new Notice(`jefr log bridge failed: ${err && err.message ? err.message : err}`);
+    });
+    try {
+      server.listen(port, "127.0.0.1", () => {
+        console.log(`[jefr] response-log bridge on http://127.0.0.1:${port}`);
+      });
+      this._logBridgeServer = server;
+    } catch (e) {
+      console.error("[jefr] log bridge start failed", e);
+    }
+  }
+
+  stopLogBridge() {
+    const server = this._logBridgeServer;
+    this._logBridgeServer = null;
+    if (!server) return;
+    try {
+      server.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** HTTP handler: GET /health, POST /response-log → vault Response Log write. */
+  async handleLogBridgeRequest(req, res) {
+    const sendJson = (code, obj) => {
+      const body = JSON.stringify(obj);
+      res.writeHead(code, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Jefr-Token",
+      });
+      res.end(body);
+    };
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Jefr-Token",
+      });
+      res.end();
+      return;
+    }
+
+    const url = (req.url || "").split("?")[0];
+    if (req.method === "GET" && (url === "/health" || url === "/")) {
+      sendJson(200, {
+        ok: true,
+        service: "jefr-response-log-bridge",
+        path: this.settings.logNotifyPath,
+        port: this.settings.logBridgePort,
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url === "/response-log") {
+      const token = (this.settings.logBridgeToken || "").trim();
+      if (token) {
+        const auth = String(req.headers["authorization"] || "");
+        const headerTok = String(req.headers["x-jefr-token"] || "");
+        const bearer = auth.toLowerCase().startsWith("bearer ")
+          ? auth.slice(7).trim()
+          : "";
+        if (headerTok !== token && bearer !== token) {
+          sendJson(401, { ok: false, error: "Unauthorized" });
+          return;
+        }
+      }
+
+      let raw = "";
+      let aborted = false;
+      req.on("data", (chunk) => {
+        if (aborted) return;
+        raw += chunk;
+        if (raw.length > LOG_BRIDGE_MAX_BYTES) {
+          aborted = true;
+          sendJson(413, { ok: false, error: "Payload too large" });
+          req.destroy();
+        }
+      });
+      req.on("end", async () => {
+        if (aborted) return;
+        try {
+          const markdown = parseLogBridgeBody(raw, req.headers["content-type"]);
+          if (typeof markdown !== "string" || !markdown.trim()) {
+            sendJson(400, { ok: false, error: "Missing markdown body" });
+            return;
+          }
+          const rel = (this.settings.logNotifyPath || "").trim() || "Tech/Meta/MCP Response Log.md";
+          await writeVaultMarkdown(this.app, rel, markdown);
+          sendJson(200, { ok: true, path: rel, bytes: Buffer.byteLength(markdown, "utf8") });
+        } catch (e) {
+          console.error("[jefr] log bridge write failed", e);
+          sendJson(500, {
+            ok: false,
+            error: e && e.message ? e.message : String(e),
+          });
+        }
+      });
+      return;
+    }
+
+    sendJson(404, { ok: false, error: "Not Found" });
   }
 
   /** Vault "modify" handler — fire an OS notification when the configured
@@ -151,6 +289,8 @@ class JefrPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof JefrView) view.onSettingsChanged();
     });
+    // Bridge bind settings may have changed.
+    this.startLogBridge();
   }
 
   async activateView() {
@@ -1653,9 +1793,86 @@ class JefrSettingTab extends PluginSettingTab {
         })
       );
 
+    containerEl.createEl("h3", { text: "Remote SSH response-log bridge" });
+
+    new Setting(containerEl)
+      .setName("Enable log bridge")
+      .setDesc(
+        "Listen on 127.0.0.1 so a Remote-SSH agent can POST markdown (via SSH RemoteForward) and overwrite the MCP Response Log in this vault."
+      )
+      .addToggle((tg) =>
+        tg.setValue(!!this.plugin.settings.logBridgeEnabled).onChange(async (v) => {
+          this.plugin.settings.logBridgeEnabled = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Log bridge port")
+      .setDesc("Default 39527. Forward this port from the remote host to Windows.")
+      .addText((t) =>
+        t
+          .setPlaceholder("39527")
+          .setValue(String(this.plugin.settings.logBridgePort || 39527))
+          .onChange(async (v) => {
+            const n = parseInt(v, 10);
+            this.plugin.settings.logBridgePort = Number.isFinite(n) && n > 0 ? n : 39527;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Log bridge token (optional)")
+      .setDesc("If set, require Authorization: Bearer <token> or X-Jefr-Token.")
+      .addText((t) =>
+        t
+          .setPlaceholder("(empty = no auth)")
+          .setValue(this.plugin.settings.logBridgeToken || "")
+          .onChange(async (v) => {
+            this.plugin.settings.logBridgeToken = (v || "").trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Test log bridge")
+      .setDesc("POST a sample note through the local bridge endpoint.")
+      .addButton((b) =>
+        b.setButtonText("Write test").onClick(async () => {
+          const port = Number(this.plugin.settings.logBridgePort) || 39527;
+          const token = (this.plugin.settings.logBridgeToken || "").trim();
+          try {
+            const headers = { "Content-Type": "application/json" };
+            if (token) headers["X-Jefr-Token"] = token;
+            const resp = await fetch(`http://127.0.0.1:${port}/response-log`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                markdown:
+                  "# Bridge test\n\nWritten via Obsidian log bridge at " +
+                  new Date().toISOString() +
+                  ".\n",
+              }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data.ok) {
+              new Notice("jefr: log bridge write ok");
+            } else {
+              new Notice(
+                "jefr: log bridge failed — " + (data.error || resp.status)
+              );
+            }
+          } catch (e) {
+            new Notice(
+              "jefr: log bridge unreachable — " + (e && e.message ? e.message : e)
+            );
+          }
+        })
+      );
+
     const tip = containerEl.createEl("p", { cls: "jefr-settings-tip" });
     tip.setText(
-      "The jefr Cursor extension must be running for this to connect. Messages you send here go through the same queue your agent reads and also appear in the jefr panel inside Cursor."
+      "The jefr Cursor extension must be running for chat to connect. For Remote SSH Response Log writes, keep this bridge enabled and forward port 39527 — see docs/remote-ssh-response-log.md."
     );
   }
 }
@@ -1666,6 +1883,46 @@ class JefrSettingTab extends PluginSettingTab {
 
 function makeId() {
   return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+/** Parse POST body for the response-log bridge: JSON `{ markdown }` / `{ content }`
+ *  or raw text/markdown. */
+function parseLogBridgeBody(raw, contentType) {
+  const ct = String(contentType || "").toLowerCase();
+  const text = String(raw || "");
+  if (ct.includes("application/json") || /^\s*\{/.test(text)) {
+    try {
+      const data = JSON.parse(text);
+      if (typeof data.markdown === "string") return data.markdown;
+      if (typeof data.content === "string") return data.content;
+      if (typeof data.text === "string") return data.text;
+    } catch {
+      // fall through to raw text
+    }
+  }
+  return text;
+}
+
+/** Ensure parent folders exist, then overwrite a vault-relative markdown path. */
+async function writeVaultMarkdown(app, relPath, markdown) {
+  const norm = String(relPath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!norm || norm.includes("..")) {
+    throw new Error("Invalid vault-relative path");
+  }
+  const parts = norm.split("/");
+  if (parts.length > 1) {
+    let dir = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = dir ? dir + "/" + parts[i] : parts[i];
+      const existing = app.vault.getAbstractFileByPath(dir);
+      if (!existing) {
+        await app.vault.createFolder(dir);
+      }
+    }
+  }
+  await app.vault.adapter.write(norm, markdown);
 }
 
 /** Ask the browser/Electron for notification permission once (no-op if already
