@@ -190,6 +190,11 @@ export function setDataDir(dir: string): void {
   QUEUE_LOCK_DIR = path.join(dir, "queue.lock");
 }
 
+/** Absolute messenger data directory (shared with the MCP server). */
+export function getDataDir(): string {
+  return dataDir;
+}
+
 // ── Cross-process queue lock + atomic writes ────────────────────────────────
 // queue.json is read-modify-written by BOTH this extension (on send) and the
 // separate MCP server process (on drain). Without coordination, a send landing

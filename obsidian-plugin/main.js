@@ -13,6 +13,7 @@
  * Protocol (server -> client):
  *   { type: "init" | "stateUpdate", queue, queueCount, reply, question, workspace, wsClients, port, ... }
  *   { type: "queueUpdate", count }
+ *   { type: "responseLog", markdown, timestamp?, agentId? }  // vault Response Log overwrite
  *   { type: "pong" }
  * Protocol (client -> server):
  *   { type: "sendText", text }
@@ -1267,6 +1268,24 @@ class JefrView extends ItemView {
 
   /* ----------------------- Inbound state ------------------------- */
 
+  /** MCP `publish_response_log` → extension WS → overwrite vault Response Log. */
+  async handleResponseLog(m) {
+    const markdown = m && typeof m.markdown === "string" ? m.markdown : "";
+    if (!markdown.trim()) return;
+    const rel =
+      (this.plugin.settings.logNotifyPath || "").trim() ||
+      "Tech/Meta/MCP Response Log.md";
+    try {
+      await writeVaultMarkdown(this.app, rel, markdown);
+    } catch (e) {
+      console.error("[jefr] responseLog write failed", e);
+      new Notice(
+        "jefr: failed to write Response Log — " +
+          (e && e.message ? e.message : e)
+      );
+    }
+  }
+
   handleState(d) {
     // Real agent liveness (heartbeat), independent of the socket connection.
     this.setAgentStatus(d.agent);
@@ -1601,6 +1620,8 @@ class JefrView extends ItemView {
       }
       if (m.type === "init" || m.type === "stateUpdate") {
         this.handleState(m);
+      } else if (m.type === "responseLog") {
+        void this.handleResponseLog(m);
       } else if (m.type === "queueUpdate") {
         if (this.queueBadge) {
           const c = m.count || 0;

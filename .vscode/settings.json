@@ -1,0 +1,18 @@
+{
+  "remote.autoForwardPorts": true,
+  "remote.restoreForwardedPorts": true,
+  "remote.SSH.defaultForwardedPorts": [
+    {
+      "name": "jefr chat / Obsidian bridge",
+      "remotePort": 39517,
+      "localPort": 39517
+    }
+  ],
+  "remote.portsAttributes": {
+    "39517": {
+      "label": "jefr",
+      "onAutoForward": "silent",
+      "elevateIfNeeded": false
+    }
+  }
+}

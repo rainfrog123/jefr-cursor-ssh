@@ -3876,6 +3876,9 @@ function setDataDir(dir) {
   HEARTBEAT_FILE = path.join(dir, "agent-alive.json");
   QUEUE_LOCK_DIR = path.join(dir, "queue.lock");
 }
+function getDataDir() {
+  return dataDir;
+}
 function sleepSync(ms) {
   try {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -4846,6 +4849,10 @@ var fs2 = __toESM(require("fs"));
 var os2 = __toESM(require("os"));
 var path2 = __toESM(require("path"));
 var CDP_STATUS_FILE = path2.join(os2.homedir(), ".moyu-message", "cdp-status.json");
+var lastResponseLogTs = "";
+function responseLogFile() {
+  return path2.join(getDataDir(), "response-log.json");
+}
 var bridgeAgentModels = /* @__PURE__ */ new Map();
 function setBridgeAgentModels(agents) {
   bridgeAgentModels.clear();
@@ -5519,6 +5526,33 @@ function syncReplyToHistory() {
   } catch {
   }
 }
+function syncResponseLogBridge() {
+  if (wsClients.length === 0)
+    return;
+  try {
+    const file = responseLogFile();
+    if (!fs2.existsSync(file))
+      return;
+    const raw = fs2.readFileSync(file, "utf-8");
+    const data = JSON.parse(raw);
+    const markdown = typeof data.markdown === "string" ? data.markdown : "";
+    const ts = typeof data.timestamp === "string" ? data.timestamp : "";
+    if (!markdown.trim() || !ts || ts === lastResponseLogTs)
+      return;
+    lastResponseLogTs = ts;
+    broadcastWs({
+      type: "responseLog",
+      markdown,
+      timestamp: ts,
+      agentId: data.agentId || null
+    });
+    try {
+      fs2.unlinkSync(file);
+    } catch {
+    }
+  } catch {
+  }
+}
 function startPushPolling() {
   if (pollTimer) {
     return;
@@ -5528,6 +5562,7 @@ function startPushPolling() {
     if (wsClients.length === 0) {
       return;
     }
+    syncResponseLogBridge();
     const state = JSON.stringify(buildPushState());
     if (state !== lastPushState) {
       lastPushState = state;

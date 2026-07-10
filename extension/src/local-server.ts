@@ -26,10 +26,16 @@ import {
   readSelectedAgentId,
   writeSelectedAgentId,
   listLiveAgents,
+  getDataDir,
   type LiveAgent,
 } from "./messenger";
 
 const CDP_STATUS_FILE = path.join(os.homedir(), ".moyu-message", "cdp-status.json");
+let lastResponseLogTs = "";
+
+function responseLogFile(): string {
+  return path.join(getDataDir(), "response-log.json");
+}
 
 /** In-memory model labels pushed by the extension's CDP monitor (preferred over
  *  re-reading cdp-status.json on every WebSocket poll). */
@@ -837,6 +843,39 @@ function syncReplyToHistory(): void {
   }
 }
 
+/** Pick up MCP `publish_response_log` payloads and push them to Obsidian over WS
+ *  so the Windows vault note can be overwritten without a reverse SSH tunnel. */
+function syncResponseLogBridge(): void {
+  if (wsClients.length === 0) return;
+  try {
+    const file = responseLogFile();
+    if (!fs.existsSync(file)) return;
+    const raw = fs.readFileSync(file, "utf-8");
+    const data = JSON.parse(raw) as {
+      markdown?: string;
+      timestamp?: string;
+      agentId?: string | null;
+    };
+    const markdown = typeof data.markdown === "string" ? data.markdown : "";
+    const ts = typeof data.timestamp === "string" ? data.timestamp : "";
+    if (!markdown.trim() || !ts || ts === lastResponseLogTs) return;
+    lastResponseLogTs = ts;
+    broadcastWs({
+      type: "responseLog",
+      markdown,
+      timestamp: ts,
+      agentId: data.agentId || null,
+    });
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // ignore
+    }
+  } catch {
+    // best-effort
+  }
+}
+
 function startPushPolling(): void {
   if (pollTimer) {
     return;
@@ -846,6 +885,7 @@ function startPushPolling(): void {
     if (wsClients.length === 0) {
       return;
     }
+    syncResponseLogBridge();
     const state = JSON.stringify(buildPushState());
     if (state !== lastPushState) {
       lastPushState = state;

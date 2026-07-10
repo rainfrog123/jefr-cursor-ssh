@@ -32,22 +32,20 @@ alwaysApply: true
 
 ## Human-readable output
 17. Write for a human reader. Use clear, natural, friendly language — full sentences and short paragraphs, not terse status fragments. Briefly explain the *why* behind what you did, not just *what* changed.
-18. Make every response as Markdown-friendly and readable as possible: descriptive headings, **bold** for key points, inline code for names/paths/commands, and tight lists. This applies to the `reply` field, `send_progress` messages, and the response-log file below. (Remember the panel's limits in rules 6–7; the log file in rule 19 is a normal Markdown file and may use the full syntax, including tables.)
+18. Make every response as Markdown-friendly and readable as possible: descriptive headings, **bold** for key points, inline code for names/paths/commands, and tight lists. This applies to the `reply` field, `send_progress` messages, and the response-log below.
 
-## Response file (mandatory) — Remote SSH bridge
-19. For **every** response, publish your full reply as rich Markdown to the Windows Obsidian note `Tech/Meta/MCP Response Log.md` (absolute on the PC: `C:\Users\jar71\obsidian\Tech\Meta\MCP Response Log.md`). Prefer the **HTTP log bridge** (Obsidian on Windows), not a direct remote filesystem write.
-20. Bridge URL: use env `JEFR_LOG_BRIDGE_URL` if set; otherwise default `http://127.0.0.1:39527/response-log`. POST JSON `{"markdown":"<full rich markdown>"}` with `Content-Type: application/json`. If `JEFR_LOG_BRIDGE_TOKEN` is set, also send header `X-Jefr-Token: <token>` (or `Authorization: Bearer <token>`).
-21. Implementation: use a shell `curl` (or equivalent) from the remote agent host. Example:
-    `curl -sS -X POST "$JEFR_LOG_BRIDGE_URL" -H "Content-Type: application/json" --data-binary @-` with the JSON body on stdin. Overwrite semantics are server-side (each POST replaces the whole note).
-22. Fallbacks: (a) if the bridge POST fails and the Windows path is directly writable from this host, write the file there; (b) never skip publishing on a normal turn just because the bridge hiccuped once — retry once, then note the failure briefly in the panel `reply`.
-23. Make the published note **rich, natural-language Markdown** — Obsidian callouts (`> [!note]`, `> [!tip]`, `> [!warning]`, `> [!success]`, `> [!example]`, etc.), headings, **bold**/*italic*, inline code, fenced code blocks, tables, and lists.
-24. Publish in the **same turn** as the reply — right before (or together with) the `check_messages` call — and never skip it on substantive turns. The panel `reply` (rules 6–7) stays within its limited subset; the log is the rich, fully-formatted version.
-25. **Exception — standby / hold-only turns:** Do NOT publish the response log when the user says STAND BY, keep the connection open, or the turn is only a trivial ack with no substantive work. The `check_messages` `reply` field is enough for those.
-26. Tunnel requirement: the bridge listens on Windows `127.0.0.1:39527`. Remote SSH must forward that port (see `docs/remote-ssh-response-log.md`).
+## Response file (mandatory) — Remote SSH out-of-box path
+19. For **every** substantive response, publish rich Markdown to the Windows Obsidian note `Tech/Meta/MCP Response Log.md` (PC path `C:\Users\jar71\obsidian\Tech\Meta\MCP Response Log.md`).
+20. **Preferred (out of the box):** call MCP tool `publish_response_log` (server `user-jefr`) with `{ "markdown": "<full rich markdown>", "agent_id": "<your id if any>" }`. The extension bridges this over the existing jefr WebSocket (`:39517`) to Obsidian on Windows — **no reverse SSH tunnel required**.
+21. Make the published note **rich Obsidian Markdown**: callouts (`> [!note]`, `> [!tip]`, `> [!warning]`, `> [!success]`, `> [!example]`), headings, **bold**/*italic*, inline code, fenced code, tables, lists.
+22. Publish in the **same turn** as the reply — right before (or together with) `check_messages`. Panel `reply` stays in the limited subset (rules 6–7); the log is the rich version.
+23. **Exception — standby / hold-only turns:** Do NOT publish when the user says STAND BY / keep connection open / trivial ack only.
+24. **Fallbacks (only if `publish_response_log` is unavailable):** (a) HTTP POST to `JEFR_LOG_BRIDGE_URL` or `http://127.0.0.1:39527/response-log` (Obsidian HTTP bridge + optional `RemoteForward 39527`); (b) direct write to the Windows path if mounted. See `docs/remote-ssh-response-log.md`.
+25. Chat from local Obsidian requires port **39517** forwarded to the remote jefr server. This branch ships `.vscode/settings.json` with `remote.SSH.defaultForwardedPorts` for 39517 so Cursor Remote SSH does it automatically.
 
 ## Misc
-27. Do not spawn subagents for parallel tasks.
-28. If `check_messages` or `ask_question` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal `[system]` text to the user — call the tool again immediately.
+26. Do not spawn subagents for parallel tasks.
+27. If `check_messages` or `ask_question` returns early due to client cancel, connection issues, or internal errors, and the user did not ask to end the chat, do not show internal `[system]` text to the user — call the tool again immediately.
 
 ---
-**End of turn (mandatory)**: Only after the reply is **fully complete**, (1) publish the full rich Markdown reply via the Response Log HTTP bridge (rules 19–26), **except standby / hold-only turns (rule 25)**; then (2) call the `user-jefr` MCP `check_messages` tool (via CallMcpTool, server `user-jefr`, toolName `check_messages`) with `arguments { "reply": "<your full reply>" }`. The `reply` field is always required and must contain your complete response — never call with empty `{}`. Never call it at the start of a turn or before the reply is done. Use `ask_question` only when the user must make a choice during the task (e.g. pick a framework or plan).
+**End of turn (mandatory)**: Only after the reply is **fully complete**, (1) call `publish_response_log` with the rich Markdown (rules 19–23), **except standby turns (rule 23)**; then (2) call `check_messages` with `arguments { "reply": "<your full reply>" }`. Never call with empty `{}`. Never call at the start of a turn. Use `ask_question` only when the user must choose.

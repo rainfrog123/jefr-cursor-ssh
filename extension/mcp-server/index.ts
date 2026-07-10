@@ -2,9 +2,9 @@
  * jefr MCP server.
  *
  * A standalone Node.js process that Cursor's AI agent talks to over stdio
- * (JSON-RPC). It exposes three tools — `check_messages`, `send_progress`,
- * and `ask_question` — and bridges them to the VS Code extension through a
- * shared directory of small JSON files (file-system IPC).
+ * (JSON-RPC). It exposes tools — `check_messages`, `send_progress`,
+ * `ask_question`, and `publish_response_log` — and bridges them to the VS Code
+ * extension through a shared directory of small JSON files (file-system IPC).
  *
  * Multi-agent: a single MCP server process is shared by every agent tile in a
  * window. To let the panel address a specific agent, each tool accepts an
@@ -58,6 +58,9 @@ const answerFile = (dir: string) => path.join(dir, "answer.json");
 const replyFile = (dir: string) => path.join(dir, "reply.json");
 const heartbeatFile = (dir: string) => path.join(dir, "agent-alive.json");
 const queueLockDir = (dir: string) => path.join(dir, "queue.lock");
+/** Shared root file: agent publishes rich Obsidian Response Log markdown here;
+ *  the extension bridges it to local Obsidian over the existing WS (:39517). */
+const RESPONSE_LOG_FILE = path.join(DATA_DIR, "response-log.json");
 
 /** How often the blocking tools re-check the disk, in ms. */
 const POLL_INTERVAL = 100;
@@ -79,7 +82,7 @@ const MAX_WAIT_MS = Number(process.env.MESSENGER_MAX_WAIT_MS) || 120_000;
 function systemSuffix(agentId?: string): string {
   const id = sanitizeAgentId(agentId);
   const idNote = id
-    ? ` You are jefr agent ${id}; pass agent_id:'${id}' to every jefr tool call (check_messages / send_progress / ask_question).`
+    ? ` You are jefr agent ${id}; pass agent_id:'${id}' to every jefr tool call (check_messages / send_progress / ask_question / publish_response_log).`
     : "";
   return (
     "\n\n---\n[system] The message above was sent by the user via the plugin. " +
@@ -829,6 +832,58 @@ server.tool(
       activeWaits--;
       live.activeWaits--;
     }
+  },
+);
+
+/* ------------------------------------------------------------------ */
+/* Tool: publish_response_log                                          */
+/* ------------------------------------------------------------------ */
+
+server.tool(
+  "publish_response_log",
+  "Publish the rich Markdown Response Log to Windows Obsidian via the jefr bridge (file IPC → extension → Obsidian WS). Prefer this on Remote SSH instead of writing a Windows path or curling a reverse tunnel. Overwrites the vault note each call.",
+  {
+    markdown: z
+      .string()
+      .describe("Full rich Markdown for Tech/Meta/MCP Response Log.md (callouts, tables, etc.)"),
+    ...AGENT_ID_ARG,
+  },
+  async ({ markdown, agent_id }) => {
+    const dir = dirFor(agent_id);
+    await ensureDir(DATA_DIR);
+    await ensureDir(dir);
+    const live = noteAgentInteraction(dir, agent_id);
+    lastInteractionTs = Date.now();
+    live.lastBusyTs = Date.now();
+    await touchAgentAlive(dir, "working", agent_id);
+
+    const text = typeof markdown === "string" ? markdown : "";
+    if (!text.trim()) {
+      return {
+        content: [{ type: "text", text: "[system] publish_response_log failed: empty markdown." }],
+        isError: true,
+      };
+    }
+
+    const payload = {
+      markdown: text,
+      agentId: sanitizeAgentId(agent_id) || null,
+      timestamp: new Date().toISOString(),
+      bytes: Buffer.byteLength(text, "utf8"),
+    };
+    await fs.writeFile(RESPONSE_LOG_FILE, JSON.stringify(payload, null, 2), "utf-8");
+    await appendServerLog(
+      "info",
+      `publish_response_log (${payload.bytes} bytes)${payload.agentId ? ` agent=${payload.agentId}` : ""}`,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: "[system] Response log published to the jefr bridge. Obsidian will overwrite the vault note when connected on :39517.",
+        },
+      ],
+    };
   },
 );
 

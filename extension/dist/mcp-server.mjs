@@ -30980,13 +30980,14 @@ var answerFile = (dir) => path.join(dir, "answer.json");
 var replyFile = (dir) => path.join(dir, "reply.json");
 var heartbeatFile = (dir) => path.join(dir, "agent-alive.json");
 var queueLockDir = (dir) => path.join(dir, "queue.lock");
+var RESPONSE_LOG_FILE = path.join(DATA_DIR, "response-log.json");
 var POLL_INTERVAL = 100;
 var AGENT_BEAT_INTERVAL = 2500;
 var HEARTBEAT_INTERVAL = Number(process.env.MESSENGER_HEARTBEAT_INTERVAL_MS) || 8e3;
 var MAX_WAIT_MS = Number(process.env.MESSENGER_MAX_WAIT_MS) || 12e4;
 function systemSuffix(agentId) {
   const id = sanitizeAgentId(agentId);
-  const idNote = id ? ` You are jefr agent ${id}; pass agent_id:'${id}' to every jefr tool call (check_messages / send_progress / ask_question).` : "";
+  const idNote = id ? ` You are jefr agent ${id}; pass agent_id:'${id}' to every jefr tool call (check_messages / send_progress / ask_question / publish_response_log).` : "";
   return "\n\n---\n[system] The message above was sent by the user via the plugin. After replying, call the jefr MCP check_messages tool to keep listening for new messages." + idNote;
 }
 async function ensureDir(dir) {
@@ -31569,6 +31570,49 @@ server.tool(
       activeWaits--;
       live.activeWaits--;
     }
+  }
+);
+server.tool(
+  "publish_response_log",
+  "Publish the rich Markdown Response Log to Windows Obsidian via the jefr bridge (file IPC \u2192 extension \u2192 Obsidian WS). Prefer this on Remote SSH instead of writing a Windows path or curling a reverse tunnel. Overwrites the vault note each call.",
+  {
+    markdown: external_exports.string().describe("Full rich Markdown for Tech/Meta/MCP Response Log.md (callouts, tables, etc.)"),
+    ...AGENT_ID_ARG
+  },
+  async ({ markdown, agent_id }) => {
+    const dir = dirFor(agent_id);
+    await ensureDir(DATA_DIR);
+    await ensureDir(dir);
+    const live = noteAgentInteraction(dir, agent_id);
+    lastInteractionTs = Date.now();
+    live.lastBusyTs = Date.now();
+    await touchAgentAlive(dir, "working", agent_id);
+    const text = typeof markdown === "string" ? markdown : "";
+    if (!text.trim()) {
+      return {
+        content: [{ type: "text", text: "[system] publish_response_log failed: empty markdown." }],
+        isError: true
+      };
+    }
+    const payload = {
+      markdown: text,
+      agentId: sanitizeAgentId(agent_id) || null,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      bytes: Buffer.byteLength(text, "utf8")
+    };
+    await fs.writeFile(RESPONSE_LOG_FILE, JSON.stringify(payload, null, 2), "utf-8");
+    await appendServerLog(
+      "info",
+      `publish_response_log (${payload.bytes} bytes)${payload.agentId ? ` agent=${payload.agentId}` : ""}`
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: "[system] Response log published to the jefr bridge. Obsidian will overwrite the vault note when connected on :39517."
+        }
+      ]
+    };
   }
 );
 var transport = new StdioServerTransport();

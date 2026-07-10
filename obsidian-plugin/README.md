@@ -30,7 +30,7 @@ No file paths or workspace hashing to configure — the extension already points
 - **Auto-reconnect** — reconnect automatically when Cursor restarts.
 - **Max messages kept** — how many bubbles to keep before trimming the oldest.
 - **Notify on MCP log rewrite** — Windows toast when the Response Log note changes.
-- **Remote SSH response-log bridge** — localhost HTTP server (default `127.0.0.1:39527`) so a Remote-SSH agent can `POST /response-log` and overwrite `Tech/Meta/MCP Response Log.md`. See [../docs/remote-ssh-response-log.md](../docs/remote-ssh-response-log.md).
+- **Remote SSH response-log bridge** — optional HTTP fallback on `127.0.0.1:39527`. Preferred path on `multi-agent-ssh` is MCP `publish_response_log` over the existing `:39517` WebSocket (see [../docs/remote-ssh-response-log.md](../docs/remote-ssh-response-log.md)).
 
 ## Notes
 
