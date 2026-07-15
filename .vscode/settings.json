@@ -5,7 +5,7 @@
     {
       "name": "jefr chat / Obsidian bridge",
       "remotePort": 39517,
-      "localPort": 39517
+      "localPort": 39518
     }
   ],
   "remote.portsAttributes": {
