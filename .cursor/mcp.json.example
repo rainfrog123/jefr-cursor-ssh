@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "jefr": {
+      "command": "node",
+      "args": [
+        "REPLACE_WITH_INSTALLED_EXTENSION/dist/mcp-server.mjs"
+      ],
+      "env": {
+        "MESSENGER_DATA_DIR": "REPLACE_WITH_HOMEDIR/.moyu-message/WORKSPACE_HASH"
+      }
+    }
+  }
+}

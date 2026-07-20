@@ -1323,6 +1323,22 @@ function getGlobalMcpJsonPath(): string {
   return path.join(os.homedir(), ".cursor", "mcp.json");
 }
 
+/** True when no jefr entry exists or its mcp-server path is missing on disk
+ *  (stale version folder after a VSIX upgrade, or a Linux path on Windows). */
+function configuredMcpServerMissing(config: McpConfig): boolean {
+  const servers = config.mcpServers;
+  if (!servers) {
+    return true;
+  }
+  const entry =
+    servers["jefr"] || servers["jefr cursor"] || servers["moyu-message"];
+  const serverPath = entry?.args?.[0];
+  if (!serverPath || typeof serverPath !== "string") {
+    return true;
+  }
+  return !fs.existsSync(serverPath);
+}
+
 function applyMcpServerEntry(config: McpConfig, messengerDataDir?: string): McpConfig {
   if (!config.mcpServers) {
     config.mcpServers = {};
@@ -1360,9 +1376,10 @@ export function setupGlobalMcpConfig(messengerDataDir?: string): boolean {
       // ignore malformed config, overwrite
     }
   }
+  const forceRewrite = configuredMcpServerMissing(config);
   applyMcpServerEntry(config, messengerDataDir);
   const nextContent = JSON.stringify(config, null, 2);
-  if (nextContent !== previousContent) {
+  if (nextContent !== previousContent || forceRewrite) {
     fs.writeFileSync(mcpJsonPath, nextContent, "utf-8");
     return true;
   }
@@ -1389,10 +1406,11 @@ export function setupMcpConfig(workspaceFolder: string, messengerDataDir?: strin
   if (!config.mcpServers) {
     config.mcpServers = {};
   }
+  const forceRewrite = configuredMcpServerMissing(config);
   applyMcpServerEntry(config, messengerDataDir);
   const nextContent = JSON.stringify(config, null, 2);
   let changed = false;
-  if (nextContent !== previousContent) {
+  if (nextContent !== previousContent || forceRewrite) {
     fs.writeFileSync(mcpJsonPath, nextContent, "utf-8");
     changed = true;
   }

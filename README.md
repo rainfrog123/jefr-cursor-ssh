@@ -4,17 +4,17 @@ English-localized Cursor IDE extension for side-panel chat via **Model Context P
 
 ## Quick start
 
-Current packaged build: **v1.1.0** (`multi-agent-ssh`).
+Current packaged build: **v1.1.1** (`multi-agent-ssh`).
 
 See [QUICKSTART.txt](QUICKSTART.txt).
 
-1. Install `jefr-cursor.vsix` or `extension/jefr-cursor-1.1.0.vsix` in Cursor Extensions
+1. Install `jefr-cursor.vsix` or `extension/jefr-cursor-1.1.1.vsix` in Cursor Extensions
 2. Restart Cursor
 3. Enable **jefr cursor** under Settings → Tools & MCP
 4. Send `Hello` once in native chat to start the loop
 5. Continue from the **jefr cursor** bottom panel
 
-**VPS / Remote SSH:** `git pull` on `multi-agent-ssh`, install the committed VSIX in the remote window — details in [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md).
+**Remote SSH (Linux or Windows):** `git pull` on `multi-agent-ssh`, install the committed VSIX in the remote window — details in [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md). Workspace `.cursor/mcp.json` is auto-written per OS (not committed).
 
 ## Repository layout
 
@@ -34,7 +34,7 @@ The plugin installs `.cursor/rules/mcp-messenger.mdc` into workspaces. The Engli
 - Use `ask_question` when user input is required
 - Use `send_progress` during multi-step tasks
 
-Branch **`multi-agent-ssh`** adds a Remote-SSH path for the Obsidian Response Log via an HTTP bridge — see [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md). Local-only use stays on **`multi-agent`**.
+Branch **`multi-agent-ssh`** adds a Remote-SSH path for the Obsidian Response Log via `publish_response_log` + port forward — see [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md). Local-only use stays on **`multi-agent-local`**.
 
 ## License
 

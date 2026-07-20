@@ -4670,6 +4670,18 @@ function getMcpServerPath() {
 function getGlobalMcpJsonPath() {
   return path.join(os.homedir(), ".cursor", "mcp.json");
 }
+function configuredMcpServerMissing(config) {
+  const servers = config.mcpServers;
+  if (!servers) {
+    return true;
+  }
+  const entry = servers["jefr"] || servers["jefr cursor"] || servers["moyu-message"];
+  const serverPath = entry?.args?.[0];
+  if (!serverPath || typeof serverPath !== "string") {
+    return true;
+  }
+  return !fs.existsSync(serverPath);
+}
 function applyMcpServerEntry(config, messengerDataDir) {
   if (!config.mcpServers) {
     config.mcpServers = {};
@@ -4701,9 +4713,10 @@ function setupGlobalMcpConfig(messengerDataDir) {
     } catch {
     }
   }
+  const forceRewrite = configuredMcpServerMissing(config);
   applyMcpServerEntry(config, messengerDataDir);
   const nextContent = JSON.stringify(config, null, 2);
-  if (nextContent !== previousContent) {
+  if (nextContent !== previousContent || forceRewrite) {
     fs.writeFileSync(mcpJsonPath, nextContent, "utf-8");
     return true;
   }
@@ -4726,10 +4739,11 @@ function setupMcpConfig(workspaceFolder, messengerDataDir) {
   if (!config.mcpServers) {
     config.mcpServers = {};
   }
+  const forceRewrite = configuredMcpServerMissing(config);
   applyMcpServerEntry(config, messengerDataDir);
   const nextContent = JSON.stringify(config, null, 2);
   let changed = false;
-  if (nextContent !== previousContent) {
+  if (nextContent !== previousContent || forceRewrite) {
     fs.writeFileSync(mcpJsonPath, nextContent, "utf-8");
     changed = true;
   }

@@ -1,12 +1,13 @@
-jefr cursor · Quick start (v1.1.0 · multi-agent-ssh)
+jefr cursor · Quick start (v1.1.1 · multi-agent-ssh)
 
-1. Install — drag jefr-cursor.vsix (or extension/jefr-cursor-1.1.0.vsix) into Cursor Extensions
+1. Install — drag jefr-cursor.vsix (or extension/jefr-cursor-1.1.1.vsix) into Cursor Extensions
 2. Restart / Reload Window — so MCP config and rules take effect
 3. Confirm MCP — Cursor Settings → Tools & MCP → enable "jefr cursor"
 4. Start chat — in Cursor's native chat, send: Hello (once, to start the loop)
    After that, continue chatting from the jefr cursor bottom panel.
 
-Remote SSH / VPS:
+Remote SSH (Linux or Windows remote):
   git checkout multi-agent-ssh && git pull
   Install the VSIX in the Remote SSH window (see docs/remote-ssh-response-log.md).
   Port 39517 is auto-forwarded to local 39518 (.vscode/settings.json).
+  .cursor/mcp.json is auto-written for that OS — do not commit /root-only paths.

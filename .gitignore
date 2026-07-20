@@ -3,3 +3,6 @@ Thumbs.db
 *.log
 node_modules/
 *.orig.bak
+
+# Machine-specific; jefr auto-writes on activate (Linux or Windows Remote SSH)
+.cursor/mcp.json
