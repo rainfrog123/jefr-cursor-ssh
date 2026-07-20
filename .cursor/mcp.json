@@ -3,7 +3,7 @@
     "jefr": {
       "command": "node",
       "args": [
-        "/root/.cursor-server/extensions/jefr.jefr-cursor-1.0.4/dist/mcp-server.mjs"
+        "/root/.cursor-server/extensions/jefr.jefr-cursor-1.1.0/dist/mcp-server.mjs"
       ],
       "env": {
         "MESSENGER_DATA_DIR": "/root/.moyu-message/49f27543ec9c"

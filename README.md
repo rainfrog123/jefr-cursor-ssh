@@ -4,13 +4,17 @@ English-localized Cursor IDE extension for side-panel chat via **Model Context P
 
 ## Quick start
 
+Current packaged build: **v1.1.0** (`multi-agent-ssh`).
+
 See [QUICKSTART.txt](QUICKSTART.txt).
 
-1. Install `jefr-cursor.vsix` in Cursor Extensions
+1. Install `jefr-cursor.vsix` or `extension/jefr-cursor-1.1.0.vsix` in Cursor Extensions
 2. Restart Cursor
 3. Enable **jefr cursor** under Settings → Tools & MCP
 4. Send `Hello` once in native chat to start the loop
 5. Continue from the **jefr cursor** bottom panel
+
+**VPS / Remote SSH:** `git pull` on `multi-agent-ssh`, install the committed VSIX in the remote window — details in [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md).
 
 ## Repository layout
 
