@@ -1,11 +1,11 @@
-jefr cursor · Quick start (v1.1.1 · Remote SSH / VPS)
+jefr cursor · Quick start (v1.0.0 · Remote SSH / VPS)
 
 This repo deploys on the REMOTE. Obsidian stays LOCAL (plugin from jefr-cursor).
 
 On the VPS (Remote SSH Cursor window):
   1. git pull (branch: main)
   2. Extensions → Install from VSIX…
-       - extension/jefr-cursor-1.1.1.vsix  (preferred)
+       - extension/jefr-cursor-1.0.0.vsix  (preferred)
        - or jefr-cursor.vsix
   3. Reload Window
   4. Settings → Tools & MCP → enable "jefr cursor"

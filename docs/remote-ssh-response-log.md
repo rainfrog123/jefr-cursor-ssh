@@ -31,8 +31,8 @@ Agent publish_response_log ──► response-log.json ──► WS responseLog 
 
 | Remote OS | Extension root | Data dir |
 |-----------|----------------|----------|
-| Linux | `~/.cursor-server/extensions/jefr.jefr-cursor-1.1.1/` | `~/.moyu-message/<workspace-hash>/` |
-| Windows | `%USERPROFILE%\.cursor-server\extensions\jefr.jefr-cursor-1.1.1\` | `%USERPROFILE%\.moyu-message\<workspace-hash>\` |
+| Linux | `~/.cursor-server/extensions/jefr.jefr-cursor-1.0.0/` | `~/.moyu-message/<workspace-hash>/` |
+| Windows | `%USERPROFILE%\.cursor-server\extensions\jefr.jefr-cursor-1.0.0\` | `%USERPROFILE%\.moyu-message\<workspace-hash>\` |
 
 After first activate: **Reload Window** so MCP picks up the written path. Verify `node -v` on the remote — MCP uses `"command": "node"`.
 
@@ -47,7 +47,7 @@ Packaged VSIX files are committed so the remote can install without a local Node
 git pull --ff-only origin main
 
 # install either packaged build (same extension; prefer the vsce one)
-#   extension/jefr-cursor-1.1.1.vsix   — full vsce package
+#   extension/jefr-cursor-1.0.0.vsix   — full vsce package
 #   jefr-cursor.vsix                   — lighter python pack (QUICKSTART)
 ```
 
@@ -55,11 +55,11 @@ In the **Remote SSH** Cursor window: Extensions → `…` → **Install from VSI
 
 ### Example: Linux VPS
 
-Workspace e.g. `/root/jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `/root/.cursor-server/extensions/jefr.jefr-cursor-1.1.1/`.
+Workspace e.g. `/root/jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `/root/.cursor-server/extensions/jefr.jefr-cursor-1.0.0/`.
 
 ### Example: Windows Remote SSH
 
-Workspace e.g. `C:\Users\Lab\jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `C:\Users\Lab\.cursor-server\extensions\jefr.jefr-cursor-1.1.1\`.
+Workspace e.g. `C:\Users\Lab\jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `C:\Users\Lab\.cursor-server\extensions\jefr.jefr-cursor-1.0.0\`.
 
 If you also keep another remote forwarded, give each remote a **different local port** (default here is **39518** for the first remote).
 
@@ -82,7 +82,7 @@ If you also keep another remote forwarded, give each remote a **different local 
 ## Install checklist
 
 - [ ] This repo on the remote workspace (`git pull` on `main`)
-- [ ] VSIX **1.1.1** installed in the Remote SSH window (`extension/jefr-cursor-1.1.1.vsix` or root `jefr-cursor.vsix`)
+- [ ] VSIX **1.0.0** installed in the Remote SSH window (`extension/jefr-cursor-1.0.0.vsix` or root `jefr-cursor.vsix`)
 - [ ] `.cursor/mcp.json` auto-written to this OS’s `.cursor-server` extension path
 - [ ] jefr Cursor extension running in the remote window
 - [ ] Port 39517 forwarded to local (auto → 39518, or Ports panel)
@@ -94,7 +94,7 @@ If you also keep another remote forwarded, give each remote a **different local 
 ```bash
 cd extension
 npm run compile
-npm run package          # → extension/jefr-cursor-1.1.1.vsix
+npm run package          # → extension/jefr-cursor-1.0.0.vsix
 cd .. && python pack_vsix.py   # → jefr-cursor.vsix
 ```
 

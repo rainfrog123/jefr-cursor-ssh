@@ -22,12 +22,12 @@ Local Obsidian ──WS :39518──► Cursor port forward
 
 ## Quick start (on the VPS)
 
-Current packaged build: **v1.1.1**.
+Current packaged build: **v1.0.0**.
 
 See [QUICKSTART.txt](QUICKSTART.txt) and [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md).
 
 1. Clone/pull this repo on the remote
-2. In the **Remote SSH** Cursor window: Extensions → **Install from VSIX…** → `extension/jefr-cursor-1.1.1.vsix` (or root `jefr-cursor.vsix`)
+2. In the **Remote SSH** Cursor window: Extensions → **Install from VSIX…** → `extension/jefr-cursor-1.0.0.vsix` (or root `jefr-cursor.vsix`)
 3. Reload Window; enable **jefr** under Settings → Tools & MCP
 4. Confirm local port forward **39517 → 39518** (see `.vscode/settings.json`)
 5. On the local machine: Obsidian plugin from `jefr-cursor` → Online → send a test message
