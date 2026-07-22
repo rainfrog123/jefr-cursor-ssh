@@ -1,14 +1,14 @@
-# Remote SSH — Linux or Windows (multi-agent-ssh)
+# Remote SSH — Linux or Windows VPS
 
-Goal: open a **Remote SSH** folder on branch **`multi-agent-ssh`**, install jefr, and have **local Obsidian chat + Response Log** work without hand-rolled reverse tunnels — whether the remote is **Linux** or **Windows**.
+Goal: open a **Remote SSH** folder from this repo, install jefr on the remote, and have **local Obsidian chat + Response Log** work without hand-rolled reverse tunnels.
 
-## What “open the box” means
+## What runs where
 
 | Capability | How it works |
 |------------|--------------|
-| Talk from **Obsidian (local)** to agent on **remote** | jefr on remote `:39517` auto-forwarded via `.vscode/settings.json` |
+| Talk from **Obsidian (local)** to agent on **remote** | jefr on remote `:39517` auto-forwarded via `.vscode/settings.json` → local `:39518` |
 | Agent updates **MCP Response Log** on local vault | MCP tool `publish_response_log` → file IPC on remote → extension WS → Obsidian writes vault |
-| Cursor jefr panel on remote | Works with the extension alone (no Obsidian needed) |
+| Cursor jefr panel on remote | Works with the extension alone |
 
 ```
 Local Obsidian ──WS :39518──► (Cursor LocalForward / defaultForwardedPorts)
@@ -23,6 +23,8 @@ Local Obsidian ──WS :39518──► (Cursor LocalForward / defaultForwardedP
 Agent publish_response_log ──► response-log.json ──► WS responseLog ──► Obsidian vault write
 ```
 
+**Obsidian plugin is not in this repo.** Install it from the local [`jefr-cursor`](https://github.com/rainfrog123/jefr-cursor) project (`obsidian-plugin/`).
+
 ## Paths by remote OS
 
 `.cursor/mcp.json` is **not committed** (machine-specific). jefr **auto-writes** it on activate from the installed extension. See [`.cursor/README-mcp.md`](../.cursor/README-mcp.md).
@@ -36,15 +38,13 @@ After first activate: **Reload Window** so MCP picks up the written path. Verify
 
 If an old `.cursor/mcp.json` points at a missing VSIX folder (or a `/root/...` path on Windows), jefr rewrites it automatically on activate.
 
-## Deploy to remote (fresh build)
+## Deploy to remote
 
-Packaged VSIX files are committed on this branch so the remote can install without a local Node build.
+Packaged VSIX files are committed so the remote can install without a local Node build.
 
 ```bash
-# on the remote, in the jefr-cursor workspace
-git fetch origin
-git checkout multi-agent-ssh
-git pull --ff-only origin multi-agent-ssh
+# on the remote, in the jefr-cursor-ssh workspace
+git pull --ff-only origin main
 
 # install either packaged build (same extension; prefer the vsce one)
 #   extension/jefr-cursor-1.1.1.vsix   — full vsce package
@@ -53,24 +53,24 @@ git pull --ff-only origin multi-agent-ssh
 
 In the **Remote SSH** Cursor window: Extensions → `…` → **Install from VSIX…** → pick the file above → **Reload Window**.
 
-### Example: Linux VPS (`ali_sg`)
+### Example: Linux VPS
 
-Workspace e.g. `/root/jefr-cursor`. After install + reload, mcp.json should resolve under `/root/.cursor-server/extensions/jefr.jefr-cursor-1.1.1/`.
+Workspace e.g. `/root/jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `/root/.cursor-server/extensions/jefr.jefr-cursor-1.1.1/`.
 
-### Example: Windows Remote SSH (e.g. VMware guest)
+### Example: Windows Remote SSH
 
-Workspace e.g. `C:\Users\Lab\jefr-cursor`. After install + reload, mcp.json should resolve under `C:\Users\Lab\.cursor-server\extensions\jefr.jefr-cursor-1.1.1\`.
+Workspace e.g. `C:\Users\Lab\jefr-cursor-ssh`. After install + reload, mcp.json should resolve under `C:\Users\Lab\.cursor-server\extensions\jefr.jefr-cursor-1.1.1\`.
 
-If you also keep a Linux remote forwarded, give each remote a **different local port** (default here is **39518** for the first remote).
+If you also keep another remote forwarded, give each remote a **different local port** (default here is **39518** for the first remote).
 
 ## One-time setup
 
-1. **Local:** Obsidian with jefr plugin enabled (vault already symlinks to this repo’s `obsidian-plugin/`).
-2. **Remote (Linux or Windows):** Clone/checkout `multi-agent-ssh`, install the committed VSIX, open the folder in Cursor Remote SSH, enable jefr MCP, reload.
+1. **Local:** Obsidian with jefr plugin from `jefr-cursor/obsidian-plugin/` (host `127.0.0.1`, port **39518** when using the default forward).
+2. **Remote:** Clone/pull this repo (`main`), install the committed VSIX in the Remote SSH window, enable jefr MCP, reload.
 3. Confirm local can reach the remote jefr port:
    - Cursor should auto-forward **39517** → local **39518** (see `.vscode/settings.json`).
    - Or Ports view → forward `39517`.
-   - Smoke: on local `curl -sS http://127.0.0.1:39518/api/status` (or `39517` if you forwarded 1:1)
+   - Smoke: on local `curl -sS http://127.0.0.1:39518/api/status`
 4. Obsidian → Online, send a test message.
 5. Agent should call `publish_response_log` each turn; the vault note updates.
 
@@ -81,12 +81,12 @@ If you also keep a Linux remote forwarded, give each remote a **different local 
 
 ## Install checklist
 
-- [ ] Branch `multi-agent-ssh` on the remote workspace (`git pull` latest)
+- [ ] This repo on the remote workspace (`git pull` on `main`)
 - [ ] VSIX **1.1.1** installed in the Remote SSH window (`extension/jefr-cursor-1.1.1.vsix` or root `jefr-cursor.vsix`)
-- [ ] `.cursor/mcp.json` auto-written to this OS’s `.cursor-server` extension path (not a foreign `/root/...` on Windows)
+- [ ] `.cursor/mcp.json` auto-written to this OS’s `.cursor-server` extension path
 - [ ] jefr Cursor extension running in the remote window
 - [ ] Port 39517 forwarded to local (auto → 39518, or Ports panel)
-- [ ] Obsidian jefr Online
+- [ ] Local Obsidian jefr Online (plugin from `jefr-cursor`, not this repo)
 - [ ] MCP tools include `publish_response_log` (rebuild/reload if not)
 
 ## Rebuild (developers)

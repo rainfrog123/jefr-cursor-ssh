@@ -1,43 +1,54 @@
-# jefr cursor (Remote SSH)
+# jefr cursor (Remote SSH / VPS)
 
-English-localized Cursor IDE extension for side-panel chat via **Model Context Protocol (MCP)**, with **Remote SSH** support for Linux and Windows remotes.
+Cursor IDE extension for side-panel chat via **Model Context Protocol (MCP)**, meant to run on a **Remote SSH** host (Linux or Windows VPS) while you talk from **local Obsidian**.
 
-Split from [`jefr-cursor`](https://github.com/rainfrog123/jefr-cursor) (`multi-agent-ssh`). For local-only use, see that repo’s `multi-agent-local` branch.
+Split from [`jefr-cursor`](https://github.com/rainfrog123/jefr-cursor). Local-only day-to-day work stays there (`multi-agent-local`).
 
-## Quick start
+## Roles
+
+| Where | What |
+|-------|------|
+| **This repo (VPS)** | jefr Cursor extension + MCP + port forward (`:39517`) |
+| **Local `jefr-cursor`** | Obsidian plugin (`obsidian-plugin/`) — install into your vault |
+
+```
+Local Obsidian ──WS :39518──► Cursor port forward
+                                      │
+                                      ▼
+                         Remote jefr extension :39517
+                                      │
+                         MCP + Cursor agent on VPS
+```
+
+## Quick start (on the VPS)
 
 Current packaged build: **v1.1.1**.
 
-See [QUICKSTART.txt](QUICKSTART.txt).
+See [QUICKSTART.txt](QUICKSTART.txt) and [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md).
 
-1. Install `jefr-cursor.vsix` or `extension/jefr-cursor-1.1.1.vsix` in Cursor Extensions
-2. Restart Cursor
-3. Enable **jefr cursor** under Settings → Tools & MCP
-4. Send `Hello` once in native chat to start the loop
-5. Continue from the **jefr cursor** bottom panel
-
-**Remote SSH (Linux or Windows):** install the committed VSIX in the remote window — details in [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md). Workspace `.cursor/mcp.json` is auto-written per OS (not committed).
+1. Clone/pull this repo on the remote
+2. In the **Remote SSH** Cursor window: Extensions → **Install from VSIX…** → `extension/jefr-cursor-1.1.1.vsix` (or root `jefr-cursor.vsix`)
+3. Reload Window; enable **jefr** under Settings → Tools & MCP
+4. Confirm local port forward **39517 → 39518** (see `.vscode/settings.json`)
+5. On the local machine: Obsidian plugin from `jefr-cursor` → Online → send a test message
 
 ## Repository layout
 
 ```
-extension/
-  dist/           Built extension + MCP server
-  rules/          English MCP rules (mcp-messenger.mdc)
-  HOW_IT_WORKS.md Architecture documentation
-.cursor/rules/    Workspace copy of MCP rules (English)
-docs/             Remote SSH Response Log bridge notes
+extension/          Extension source, dist, MCP server, packaged VSIX
+.vscode/            Remote SSH port forward defaults
+.cursor/            MCP rules + mcp.json.example (mcp.json is auto-written)
+docs/               Remote SSH Response Log bridge notes
 ```
 
 ## MCP rules
 
-The plugin installs `.cursor/rules/mcp-messenger.mdc` into workspaces. The English version requires the AI to:
+The plugin installs `.cursor/rules/mcp-messenger.mdc` into workspaces. Agents must:
 
 - Call `check_messages` after every reply
 - Use `ask_question` when user input is required
 - Use `send_progress` during multi-step tasks
-
-Remote SSH uses `publish_response_log` + port forward for the Obsidian Response Log — see [docs/remote-ssh-response-log.md](docs/remote-ssh-response-log.md).
+- Call `publish_response_log` so local Obsidian can write the Response Log note
 
 ## License
 
