@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "jefr": {
+    "jefr-cursor-ssh": {
       "command": "node",
       "args": [
         "REPLACE_WITH_INSTALLED_EXTENSION/dist/mcp-server.mjs"

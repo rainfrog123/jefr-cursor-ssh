@@ -340,9 +340,10 @@ body {
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .general-brand-name {
-	font-size: 18px;
+	font-size: 14px;
 	font-weight: 800;
 	letter-spacing: -0.03em;
+	white-space: nowrap;
 	line-height: 1;
 	background: linear-gradient(135deg, var(--accent), var(--accent-strong));
 	-webkit-background-clip: text;

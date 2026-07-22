@@ -1331,7 +1331,10 @@ function configuredMcpServerMissing(config: McpConfig): boolean {
     return true;
   }
   const entry =
-    servers["jefr"] || servers["jefr cursor"] || servers["moyu-message"];
+    servers["jefr-cursor-ssh"] ||
+    servers["jefr"] ||
+    servers["jefr cursor"] ||
+    servers["moyu-message"];
   const serverPath = entry?.args?.[0];
   if (!serverPath || typeof serverPath !== "string") {
     return true;
@@ -1347,6 +1350,7 @@ function applyMcpServerEntry(config: McpConfig, messengerDataDir?: string): McpC
   delete config.mcpServers["moyu-message"];
   delete config.mcpServers["jefr cursor"];
   delete config.mcpServers["jefr"];
+  delete config.mcpServers["jefr-cursor-ssh"];
 
   const mcpServerConfig: McpServerEntry = {
     command: "node",
@@ -1355,7 +1359,7 @@ function applyMcpServerEntry(config: McpConfig, messengerDataDir?: string): McpC
   if (messengerDataDir) {
     mcpServerConfig.env = { MESSENGER_DATA_DIR: messengerDataDir };
   }
-  config.mcpServers["jefr"] = mcpServerConfig;
+  config.mcpServers["jefr-cursor-ssh"] = mcpServerConfig;
   return config;
 }
 
@@ -1429,7 +1433,7 @@ export function removeMcpConfig(workspaceFolder: string): boolean {
       if (!config.mcpServers) {
         config.mcpServers = {};
       }
-      const keys = ["jefr", "jefr cursor", "moyu-message"];
+      const keys = ["jefr-cursor-ssh", "jefr", "jefr cursor", "moyu-message"];
       for (const key of keys) {
         if (config.mcpServers[key]) {
           delete config.mcpServers[key];
@@ -1477,7 +1481,7 @@ alwaysApply: true
 16. \`progress\` should include: what was done, current approach, next step. Use concise Markdown.
 
 ---
-**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr MCP \`check_messages\` tool (CallMcpTool, server identifier for jefr, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`;
+**End of turn (mandatory)**: Only after the reply is **fully complete**, the last step must call the jefr-cursor-ssh MCP \`check_messages\` tool (CallMcpTool, server identifier \`jefr-cursor-ssh\`, toolName \`check_messages\`, arguments \`{}\`). Never call it at the start of a turn or before the reply is done. Use \`ask_question\` only when the user must make a choice during the task (e.g. pick a framework or plan).`;
 
 function setupCursorRules(workspaceFolder: string): boolean {
   const rulesDir = path.join(workspaceFolder, ".cursor", "rules");

@@ -1,19 +1,19 @@
-jefr cursor · Quick start (v3.0.0 · Remote SSH / VPS)
+jefr-cursor-ssh · Quick start (v3.0.0 · Remote SSH / VPS)
 
 This repo deploys on the REMOTE. Obsidian stays LOCAL (plugin from jefr-cursor).
 
 On the VPS (Remote SSH Cursor window):
   1. git pull (branch: main)
   2. Extensions → Install from VSIX…
-       - extension/jefr-cursor-3.0.0.vsix  (preferred)
-       - or jefr-cursor.vsix
+       - extension/jefr-cursor-ssh-3.0.0.vsix  (preferred)
+       - or jefr-cursor-ssh.vsix
   3. Reload Window
-  4. Settings → Tools & MCP → enable "jefr cursor"
+  4. Settings → Tools & MCP → enable "jefr-cursor-ssh"
   5. Port 39517 auto-forwards to local 39518 (.vscode/settings.json)
 
 On the local machine:
   - Install Obsidian plugin from jefr-cursor/obsidian-plugin/
-  - Point host/port at 127.0.0.1:39518 (forwarded remote jefr)
+  - Point host/port at 127.0.0.1:39518 (forwarded remote jefr-cursor-ssh)
   - Open jefr chat → Online → send a test message
 
 Details: docs/remote-ssh-response-log.md

@@ -1,7 +1,7 @@
 {
-	"name": "jefr-cursor",
-	"displayName": "jefr",
-	"description": "jefr - Cursor AI side-panel chat via MCP",
+	"name": "jefr-cursor-ssh",
+	"displayName": "jefr-cursor-ssh",
+	"description": "jefr-cursor-ssh — Remote SSH / VPS Cursor side-panel chat via MCP",
 	"version": "3.0.0",
 	"publisher": "jefr",
 	"license": "MIT",
@@ -20,7 +20,7 @@
 			"panel": [
 				{
 					"id": "mcpMessenger",
-					"title": "jefr",
+					"title": "jefr-cursor-ssh",
 					"icon": "media/icon.svg"
 				}
 			]
@@ -30,26 +30,26 @@
 				{
 					"type": "webview",
 					"id": "mcpMessenger.mainView",
-					"name": "jefr"
+					"name": "jefr-cursor-ssh"
 				}
 			]
 		},
 		"commands": [
 			{
 				"command": "mcpMessenger.setupMcp",
-				"title": "jefr: Install MCP config"
+				"title": "jefr-cursor-ssh: Install MCP config"
 			},
 			{
 				"command": "mcpMessenger.removeMcp",
-				"title": "jefr: Remove MCP config"
+				"title": "jefr-cursor-ssh: Remove MCP config"
 			},
 			{
 				"command": "mcpMessenger.sendFile",
-				"title": "jefr: Send file to queue"
+				"title": "jefr-cursor-ssh: Send file to queue"
 			},
 			{
 				"command": "mcpMessenger.openConsole",
-				"title": "jefr: Open local console"
+				"title": "jefr-cursor-ssh: Open local console"
 			}
 		],
 		"menus": {
@@ -85,10 +85,5 @@
 		"react": "^18.2.0",
 		"react-dom": "^18.2.0",
 		"typescript": "^5.0.0"
-	},
-	"__metadata": {
-		"installedTimestamp": 1781545266118,
-		"targetPlatform": "undefined",
-		"size": 1401230
 	}
 }

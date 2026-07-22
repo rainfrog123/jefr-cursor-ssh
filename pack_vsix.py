@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 EXT = ROOT / "extension"
-OUT = ROOT / "jefr-cursor.vsix"
+OUT = ROOT / "jefr-cursor-ssh.vsix"
 
 INCLUDE = [
     EXT / "package.json",

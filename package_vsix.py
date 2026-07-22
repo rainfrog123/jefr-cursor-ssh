@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Package jefr-cursor.vsix without npm/vsce."""
+"""Package jefr-cursor-ssh.vsix without npm/vsce."""
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "jefr-cursor.vsix"
+OUT = ROOT / "jefr-cursor-ssh.vsix"
 
 INCLUDE = [
     ROOT / "[Content_Types].xml",

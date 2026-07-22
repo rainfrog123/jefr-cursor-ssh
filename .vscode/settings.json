@@ -3,14 +3,14 @@
   "remote.restoreForwardedPorts": true,
   "remote.SSH.defaultForwardedPorts": [
     {
-      "name": "jefr chat / Obsidian bridge",
+      "name": "jefr-cursor-ssh / Obsidian bridge",
       "remotePort": 39517,
       "localPort": 39518
     }
   ],
   "remote.portsAttributes": {
     "39517": {
-      "label": "jefr",
+      "label": "jefr-cursor-ssh",
       "onAutoForward": "silent",
       "elevateIfNeeded": false
     }

@@ -76,7 +76,7 @@ export function BrandHeader(props: {
     <div className="general-brand">
       <div className="general-brand-left">
         <span className="general-brand-mark" aria-hidden="true" />
-        <span className="general-brand-name">jefr</span>
+        <span className="general-brand-name">jefr-cursor-ssh</span>
         {props.version && (
           <span className="general-brand-version">v{props.version}</span>
         )}

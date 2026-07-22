@@ -7,7 +7,7 @@ alwaysApply: true
 # MCP tool usage rules
 
 ## Core loop
-1. After each conversation turn is **fully output**, the last step must call `check_messages` (server `user-jefr`, toolName `check_messages`). Applies to Agent/Plan/Debug/Ask modes with no exceptions.
+1. After each conversation turn is **fully output**, the last step must call `check_messages` (server `jefr-cursor-ssh`, toolName `check_messages`). Applies to Agent/Plan/Debug/Ask modes with no exceptions.
 2. `check_messages` blocks until the user sends a new message; process it, reply, then call `check_messages` again — perpetual loop: reply → check_messages → receive → reply → check_messages.
 3. Never call `check_messages` at the start of a turn or before the reply is complete. Only exception: the user explicitly asks to end the conversation.
 4. After writing a plan (Plan), finishing analysis (Debug), or answering a question (Ask), do not end the turn — call `check_messages` and wait for user feedback.
@@ -22,13 +22,13 @@ alwaysApply: true
 9. Keep replies concise — the panel is narrow. Prefer short paragraphs and tight lists over long blocks of text.
 
 ## ask_question
-10. When the user must choose, confirm, or approve an action (pick a plan/framework, approve a change, etc.), call `ask_question` (server `user-jefr`). Do not use Cursor's built-in ask_user_question.
+10. When the user must choose, confirm, or approve an action (pick a plan/framework, approve a change, etc.), call `ask_question` (server `jefr-cursor-ssh`). Do not use Cursor's built-in ask_user_question.
 11. Format: `{ "questions": [{ "question": "...", "options": [{ "id": "a", "label": "A" }, { "id": "b", "label": "B" }], "allow_multiple": false }] }`. Single-select: `allow_multiple: false`; multi-select: `true`; one array may mix both. Users can add custom text via the Other field — no extra option needed.
 12. After `ask_question` returns an answer, still call `check_messages` to keep listening.
 13. Do not use `ask_question` to ask "anything else?" at the end of every turn — end turns with `check_messages`. Use `ask_question` only when a real decision is needed.
 
 ## send_progress
-14. During multi-step work, after each key step call `send_progress` (server `user-jefr`) with a summary; it returns immediately, then continue to the next step. Example: `{ "progress": "## Step 1 complete\nUpdated xxx..." }`. Include: what was done, current approach, next step. Use concise Markdown.
+14. During multi-step work, after each key step call `send_progress` (server `jefr-cursor-ssh`) with a summary; it returns immediately, then continue to the next step. Example: `{ "progress": "## Step 1 complete\nUpdated xxx..." }`. Include: what was done, current approach, next step. Use concise Markdown.
 
 ## Human-readable output
 17. Write for a human reader. Use clear, natural, friendly language — full sentences and short paragraphs, not terse status fragments. Briefly explain the *why* behind what you did, not just *what* changed.
@@ -36,7 +36,7 @@ alwaysApply: true
 
 ## Response file (mandatory) — Remote SSH out-of-box path
 19. For **every** substantive response, publish rich Markdown to the Windows Obsidian note `Tech/Meta/MCP Response Log.md` (PC path `C:\Users\jar71\obsidian\Tech\Meta\MCP Response Log.md`).
-20. **Preferred (out of the box):** call MCP tool `publish_response_log` (server `user-jefr`) with `{ "markdown": "<full rich markdown>", "agent_id": "<your id if any>" }`. The extension bridges this over the existing jefr WebSocket (`:39517`) to Obsidian on Windows — **no reverse SSH tunnel required**.
+20. **Preferred (out of the box):** call MCP tool `publish_response_log` (server `jefr-cursor-ssh`) with `{ "markdown": "<full rich markdown>", "agent_id": "<your id if any>" }`. The extension bridges this over the existing jefr-cursor-ssh WebSocket (`:39517`) to Obsidian on Windows — **no reverse SSH tunnel required**.
 21. Make the published note **rich Obsidian Markdown**: callouts (`> [!note]`, `> [!tip]`, `> [!warning]`, `> [!success]`, `> [!example]`), headings, **bold**/*italic*, inline code, fenced code, tables, lists.
 22. Publish in the **same turn** as the reply — right before (or together with) `check_messages`. Panel `reply` stays in the limited subset (rules 6–7); the log is the rich version.
 23. **Exception — standby / hold-only turns:** Do NOT publish when the user says STAND BY / keep connection open / trivial ack only.
